@@ -8,8 +8,9 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
--- Place 155615604 and other places use the base scan.
-local teamMode = game.PlaceId == 2336379484
+local flagMode = game.PlaceId == 2336379484
+local prisonMode = game.PlaceId == 155615604
+local hasPlayerScan = flagMode or prisonMode
 
 local FLAGS_BY_TEAM = {
 	["Green Team"] = { part = "greenflag", brick = BrickColor.new("Bright green") },
@@ -39,6 +40,11 @@ local warningAmber = Color3.fromRGB(255, 214, 117)
 local carrierOrange = Color3.fromRGB(255, 109, 67)
 local carrierBlue = Color3.fromRGB(102, 203, 255)
 local navy = Color3.fromRGB(7, 13, 25)
+local PRISON_ROLES = {
+	Guards = { label = "GUARD", color = Color3.fromRGB(93, 219, 255) },
+	Inmates = { label = "INMATE", color = amber },
+	Criminals = { label = "CRIMINAL", color = Color3.fromRGB(255, 89, 112) },
+}
 local neutralTint = Color3.new(1, 1, 1)
 local FONT_FAMILY = "rbxasset://fonts/families/Montserrat.json"
 local font = Font.new(FONT_FAMILY, Enum.FontWeight.Medium)
@@ -117,7 +123,7 @@ local gridLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 3)
 gridLayer.Size = UDim2.fromScale(1, 1)
 local markerLayer
 local highlightFolder
-if teamMode then
+if hasPlayerScan then
 	markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
 	markerLayer.Size = UDim2.fromScale(1, 1)
 	highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
@@ -199,6 +205,22 @@ local function makeEnemyVisual()
 	rect(standard, 14, -10, 2, 20, amber, .74, 6)
 	local dot = rect(standard, -1.5, 14, 3, 3, amber, .90, 6)
 	dot.Rotation = 45
+	marker.Visible = false
+	if prisonMode then
+		local roleLabel = create("TextLabel", marker, {
+			AnchorPoint = Vector2.new(.5, 0),
+			Position = UDim2.fromOffset(0, 21),
+			Size = UDim2.fromOffset(80, 18),
+			BackgroundColor3 = navy,
+			BackgroundTransparency = .24,
+			BorderSizePixel = 0,
+			TextSize = 14,
+			FontFace = font,
+			ZIndex = 7,
+		})
+		return { marker = marker, scale = markerScale, standard = standard, roleLabel = roleLabel }
+	end
+
 	local warning = rect(marker, 23, -9, 0, 0, navy, 0, 7)
 	local badge = rect(warning, -3, -2, 22, 23, navy, .68, 7)
 	create("UICorner", badge, { CornerRadius = UDim.new(0, 3) })
@@ -223,7 +245,6 @@ local function makeEnemyVisual()
 		ZIndex = 7,
 	})
 	warning.Visible = false
-	marker.Visible = false
 	return {
 		marker = marker, scale = markerScale, standard = standard,
 		warning = warning, warningText = warningText,
@@ -239,7 +260,9 @@ local function stopWatchingProtection(visual)
 		visual.protectionRoot = nil
 		visual.protectionConnections = nil
 	end
-	visual.warning.Visible = false
+	if visual.warning then
+		visual.warning.Visible = false
+	end
 end
 
 local function watchProtection(visual, character, root)
@@ -781,7 +804,7 @@ local function makeFlagStatus()
 	}
 end
 
-local flagStatus = if teamMode then makeFlagStatus() else nil
+local flagStatus = if flagMode then makeFlagStatus() else nil
 
 -- Scan lighting, grid projection, and player markers
 local scanEnabled = false
@@ -1127,20 +1150,31 @@ end
 
 local function refreshEnemyTargets()
 	table.clear(enemyTargets)
-	local ownTeam = activeTeam(player)
-	if not ownTeam then
+	local ownTeam = if flagMode then activeTeam(player) else player.Team
+	if not ownTeam or (prisonMode and (player.Neutral or not PRISON_ROLES[ownTeam.Name])) then
 		hideEnemies()
 		return
 	end
 
+	local seesGuards = prisonMode and ownTeam.Name ~= "Guards"
 	for _, other in Players:GetPlayers() do
 		if other == player then
 			continue
 		end
-		local team = activeTeam(other)
 		local character = other.Character
-		local carrier = flagStatus.carriers[other]
-		local opponent = team ~= nil and team ~= ownTeam
+		local carrier = flagStatus and flagStatus.carriers[other]
+		local opponent
+		local role
+		if prisonMode then
+			local team = other.Team
+			if team and not other.Neutral and (team.Name == "Guards") == seesGuards then
+				role = PRISON_ROLES[team.Name]
+			end
+			opponent = role ~= nil
+		else
+			local team = activeTeam(other)
+			opponent = team ~= nil and team ~= ownTeam
+		end
 		local root, humanoid
 		if opponent or (carrier and carrier.character == character) then
 			root, humanoid = aliveRoot(character)
@@ -1161,11 +1195,21 @@ local function refreshEnemyTargets()
 		local head = character:FindFirstChild("Head")
 		visual.player = other
 		visual.opponent = opponent
+		if role and visual.role ~= role then
+			visual.role = role
+			visual.roleLabel.Text = role.label
+			visual.roleLabel.TextColor3 = role.color
+			for _, panel in visual.standard:GetChildren() do
+				panel.BackgroundColor3 = role.color
+			end
+		end
 		visual.root = root
 		visual.humanoid = humanoid
 		visual.head = head and head:IsA("BasePart") and head or nil
 		visual.character = character
-		watchProtection(visual, character, root)
+		if flagMode then
+			watchProtection(visual, character, root)
+		end
 		if visual.highlight and visual.highlight.Adornee ~= character then
 			visual.highlight.Adornee = character
 		end
@@ -1182,7 +1226,7 @@ local function updateEnemies(camera, localPosition, dt)
 
 	for _, visual in enemyTargets do
 		local root = visual.root
-		local carrier = flagStatus.carriers[visual.player]
+		local carrier = flagStatus and flagStatus.carriers[visual.player]
 		if carrier and carrier.character ~= visual.character then
 			carrier = nil
 		end
@@ -1192,7 +1236,8 @@ local function updateEnemies(camera, localPosition, dt)
 			continue
 		end
 
-		local color = carrier and (visual.opponent and carrierOrange or carrierBlue) or amber
+		local color = carrier and (visual.opponent and carrierOrange or carrierBlue)
+			or (visual.role and visual.role.color or amber)
 		if visual.markerColor ~= color then
 			visual.markerColor = color
 			visual.standard.Visible = carrier == nil
@@ -1230,7 +1275,7 @@ local function updateEnemies(camera, localPosition, dt)
 			place(visual.marker, point)
 			local distance = (root.Position - localPosition).Magnitude
 			visual.scale.Scale = math.clamp(1 - distance / 340, .45, .92)
-			if visual.warning.Visible then
+			if visual.warning and visual.warning.Visible then
 				local rightSide = point.X < viewport.X - 42
 				visual.warning.Position = UDim2.fromOffset(rightSide and 23 or -42, -9)
 				visual.warningText.Visible = rightSide and point.X < viewport.X - 137 and distance < 165
@@ -1243,6 +1288,8 @@ local function stopScan()
 	scanEnabled = false
 	if flagStatus then
 		flagStatus.close()
+	end
+	if hasPlayerScan then
 		table.clear(enemyTargets)
 		enemyRefresh = 0
 		markerLayer.Visible = false
@@ -1258,6 +1305,8 @@ local function render(dt)
 		strength = 0
 		if flagStatus then
 			flagStatus.close()
+		end
+		if hasPlayerScan then
 			hideEnemies()
 		end
 		gui.Enabled = false
@@ -1308,8 +1357,10 @@ local function render(dt)
 		end
 	end
 	updateGrid(camera)
-	if scanEnabled and flagStatus then
-		flagStatus.update(camera)
+	if scanEnabled and hasPlayerScan then
+		if flagStatus then
+			flagStatus.update(camera)
+		end
 		markerLayer.Visible = true
 		updateEnemies(camera, root.Position, dt)
 	end
@@ -1363,7 +1414,7 @@ local connections = {
 	player.CharacterRemoving:Connect(stopScan),
 }
 
-if flagStatus then
+if hasPlayerScan then
 	for _, candidate in Players:GetPlayers() do
 		watchPlayer(candidate)
 	end
@@ -1398,13 +1449,15 @@ local function cleanup()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
-	if flagStatus then
+	if hasPlayerScan then
 		for candidate in playerConnections do
 			unwatchPlayer(candidate)
 		end
 		hideEnemies()
-		flagStatus.destroy()
 		highlightFolder:Destroy()
+	end
+	if flagStatus then
+		flagStatus.destroy()
 	end
 	grade:Destroy()
 	gui:Destroy()
