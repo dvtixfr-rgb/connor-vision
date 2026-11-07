@@ -1,5 +1,5 @@
 -- Connor Vision
--- Q toggles analysis. E opens flag status during analysis.
+-- Q toggles analysis. E opens flag status in place 2336379484.
 -- In Studio, use a LocalScript in StarterPlayerScripts.
 
 local Players = game:GetService("Players")
@@ -7,6 +7,9 @@ local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+
+-- Place 155615604 and other places use the base scan.
+local teamMode = game.PlaceId == 2336379484
 
 local FLAGS_BY_TEAM = {
 	["Green Team"] = { part = "greenflag", brick = BrickColor.new("Bright green") },
@@ -111,10 +114,14 @@ end
 local canvas = rect(gui, 0, 0, 0, 0, navy, 0, 3)
 local canvasScale = create("UIScale", canvas, { Scale = 1 })
 local gridLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 3)
-local markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
 gridLayer.Size = UDim2.fromScale(1, 1)
-markerLayer.Size = UDim2.fromScale(1, 1)
-local highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
+local markerLayer
+local highlightFolder
+if teamMode then
+	markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
+	markerLayer.Size = UDim2.fromScale(1, 1)
+	highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
+end
 local gridBands = {}
 local gridNodes = {}
 local enemyVisuals = {}
@@ -774,7 +781,7 @@ local function makeFlagStatus()
 	}
 end
 
-local flagStatus = makeFlagStatus()
+local flagStatus = if teamMode then makeFlagStatus() else nil
 
 -- Scan lighting, grid projection, and player markers
 local scanEnabled = false
@@ -1234,11 +1241,13 @@ end
 
 local function stopScan()
 	scanEnabled = false
-	flagStatus.close()
-	table.clear(enemyTargets)
-	enemyRefresh = 0
-	markerLayer.Visible = false
-	hideEnemies()
+	if flagStatus then
+		flagStatus.close()
+		table.clear(enemyTargets)
+		enemyRefresh = 0
+		markerLayer.Visible = false
+		hideEnemies()
+	end
 end
 
 local function render(dt)
@@ -1247,10 +1256,12 @@ local function render(dt)
 	local root = aliveRoot(character)
 	if not camera or not root then
 		strength = 0
-		flagStatus.close()
+		if flagStatus then
+			flagStatus.close()
+			hideEnemies()
+		end
 		gui.Enabled = false
 		grade.Enabled = false
-		hideEnemies()
 		return
 	end
 
@@ -1297,7 +1308,7 @@ local function render(dt)
 		end
 	end
 	updateGrid(camera)
-	if scanEnabled then
+	if scanEnabled and flagStatus then
 		flagStatus.update(camera)
 		markerLayer.Visible = true
 		updateEnemies(camera, root.Position, dt)
@@ -1326,10 +1337,6 @@ local function unwatchPlayer(candidate)
 	playerConnections[candidate] = nil
 end
 
-for _, candidate in Players:GetPlayers() do
-	watchPlayer(candidate)
-end
-
 local function onInputBegan(input, handled)
 	if handled or UserInputService:GetFocusedTextBox() then
 		return
@@ -1343,7 +1350,7 @@ local function onInputBegan(input, handled)
 			gridDatum = nil
 			sampleTimer = 0
 		end
-	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled then
+	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and flagStatus then
 		local camera = Workspace.CurrentCamera
 		if camera and aliveRoot(player.Character) then
 			flagStatus.toggle(camera)
@@ -1354,8 +1361,14 @@ end
 local connections = {
 	UserInputService.InputBegan:Connect(onInputBegan),
 	player.CharacterRemoving:Connect(stopScan),
-	Players.PlayerAdded:Connect(watchPlayer),
-	Players.PlayerRemoving:Connect(function(other)
+}
+
+if flagStatus then
+	for _, candidate in Players:GetPlayers() do
+		watchPlayer(candidate)
+	end
+	table.insert(connections, Players.PlayerAdded:Connect(watchPlayer))
+	table.insert(connections, Players.PlayerRemoving:Connect(function(other)
 		unwatchPlayer(other)
 		refreshRoster()
 		local visual = enemyVisuals[other]
@@ -1364,8 +1377,8 @@ local connections = {
 			visual.marker:Destroy()
 			enemyVisuals[other] = nil
 		end
-	end),
-}
+	end))
+end
 
 local stopped = false
 local scriptConnection
@@ -1385,12 +1398,14 @@ local function cleanup()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
-	for candidate in playerConnections do
-		unwatchPlayer(candidate)
+	if flagStatus then
+		for candidate in playerConnections do
+			unwatchPlayer(candidate)
+		end
+		hideEnemies()
+		flagStatus.destroy()
+		highlightFolder:Destroy()
 	end
-	hideEnemies()
-	flagStatus.destroy()
-	highlightFolder:Destroy()
 	grade:Destroy()
 	gui:Destroy()
 end
