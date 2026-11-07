@@ -5,6 +5,8 @@
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+local ContentProvider = game:GetService("ContentProvider")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
@@ -79,6 +81,42 @@ local grade = create("ColorCorrectionEffect", Lighting, {
 	Name = "ConnorTeamVisionGrade",
 	Enabled = false,
 })
+
+local scanAudio = create("Folder", SoundService, { Name = "ConnorVisionAudio" })
+local scanOnSound = create("Sound", scanAudio, {
+	Name = "ScanOn",
+	SoundId = "rbxassetid://2789243886", -- Start-Up Screen by AgentAST, CC BY 3.0
+	Volume = .34,
+	PlaybackSpeed = 1.2,
+})
+local scanOffSound = create("Sound", scanAudio, {
+	Name = "ScanOff",
+	SoundId = "rbxassetid://124307033081669", -- Computer Shutdown by Sounds Evolved
+	Volume = .28,
+	PlaybackSpeed = 1.35,
+})
+local scanFallback = create("Sound", scanAudio, {
+	Name = "ScanFallback",
+	SoundId = "rbxassetid://12221990", -- Electronic ping by Roblox
+	Volume = .24,
+})
+task.defer(function()
+	ContentProvider:PreloadAsync({ scanOnSound, scanOffSound, scanFallback })
+end)
+
+local currentScanSound
+local function playScanSound(enabled)
+	if currentScanSound then
+		currentScanSound:Stop()
+	end
+	local sound = if enabled then scanOnSound else scanOffSound
+	if not sound.IsLoaded then
+		scanFallback.PlaybackSpeed = if enabled then 1.1 else .72
+		sound = scanFallback
+	end
+	currentScanSound = sound
+	sound:Play()
+end
 
 local function rect(parent, x, y, width, height, color, opacity, z)
 	return create("Frame", parent, {
@@ -1388,6 +1426,7 @@ local function onInputBegan(input, handled)
 			gridDatum = nil
 			sampleTimer = 0
 		end
+		playScanSound(scanEnabled)
 	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and flagStatus then
 		local camera = Workspace.CurrentCamera
 		if camera and aliveRoot(player.Character) then
@@ -1447,6 +1486,7 @@ local function cleanup()
 		flagStatus.destroy()
 	end
 	grade:Destroy()
+	scanAudio:Destroy()
 	gui:Destroy()
 end
 
