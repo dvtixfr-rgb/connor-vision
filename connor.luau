@@ -40,10 +40,10 @@ local warningAmber = Color3.fromRGB(255, 214, 117)
 local carrierOrange = Color3.fromRGB(255, 109, 67)
 local carrierBlue = Color3.fromRGB(102, 203, 255)
 local navy = Color3.fromRGB(7, 13, 25)
-local PRISON_ROLES = {
-	Guards = { label = "GUARD", color = Color3.fromRGB(93, 219, 255) },
-	Inmates = { label = "INMATE", color = amber },
-	Criminals = { label = "CRIMINAL", color = Color3.fromRGB(255, 89, 112) },
+local PRISON_ROLE_COLORS = {
+	Guards = Color3.fromRGB(93, 219, 255),
+	Inmates = amber,
+	Criminals = Color3.fromRGB(255, 89, 112),
 }
 local neutralTint = Color3.new(1, 1, 1)
 local FONT_FAMILY = "rbxasset://fonts/families/Montserrat.json"
@@ -207,18 +207,7 @@ local function makeEnemyVisual()
 	dot.Rotation = 45
 	marker.Visible = false
 	if prisonMode then
-		local roleLabel = create("TextLabel", marker, {
-			AnchorPoint = Vector2.new(.5, 0),
-			Position = UDim2.fromOffset(0, 21),
-			Size = UDim2.fromOffset(80, 18),
-			BackgroundColor3 = navy,
-			BackgroundTransparency = .24,
-			BorderSizePixel = 0,
-			TextSize = 14,
-			FontFace = font,
-			ZIndex = 7,
-		})
-		return { marker = marker, scale = markerScale, standard = standard, roleLabel = roleLabel }
+		return { marker = marker, scale = markerScale, standard = standard }
 	end
 
 	local warning = rect(marker, 23, -9, 0, 0, navy, 0, 7)
@@ -1151,7 +1140,7 @@ end
 local function refreshEnemyTargets()
 	table.clear(enemyTargets)
 	local ownTeam = if flagMode then activeTeam(player) else player.Team
-	if not ownTeam or (prisonMode and (player.Neutral or not PRISON_ROLES[ownTeam.Name])) then
+	if not ownTeam or (prisonMode and (player.Neutral or not PRISON_ROLE_COLORS[ownTeam.Name])) then
 		hideEnemies()
 		return
 	end
@@ -1164,13 +1153,13 @@ local function refreshEnemyTargets()
 		local character = other.Character
 		local carrier = flagStatus and flagStatus.carriers[other]
 		local opponent
-		local role
+		local roleColor
 		if prisonMode then
 			local team = other.Team
 			if team and not other.Neutral and (team.Name == "Guards") == seesGuards then
-				role = PRISON_ROLES[team.Name]
+				roleColor = PRISON_ROLE_COLORS[team.Name]
 			end
-			opponent = role ~= nil
+			opponent = roleColor ~= nil
 		else
 			local team = activeTeam(other)
 			opponent = team ~= nil and team ~= ownTeam
@@ -1195,12 +1184,10 @@ local function refreshEnemyTargets()
 		local head = character:FindFirstChild("Head")
 		visual.player = other
 		visual.opponent = opponent
-		if role and visual.role ~= role then
-			visual.role = role
-			visual.roleLabel.Text = role.label
-			visual.roleLabel.TextColor3 = role.color
+		if roleColor and visual.roleColor ~= roleColor then
+			visual.roleColor = roleColor
 			for _, panel in visual.standard:GetChildren() do
-				panel.BackgroundColor3 = role.color
+				panel.BackgroundColor3 = roleColor
 			end
 		end
 		visual.root = root
@@ -1237,7 +1224,7 @@ local function updateEnemies(camera, localPosition, dt)
 		end
 
 		local color = carrier and (visual.opponent and carrierOrange or carrierBlue)
-			or (visual.role and visual.role.color or amber)
+			or visual.roleColor or amber
 		if visual.markerColor ~= color then
 			visual.markerColor = color
 			visual.standard.Visible = carrier == nil
