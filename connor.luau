@@ -85,9 +85,8 @@ local grade = create("ColorCorrectionEffect", Lighting, {
 local scanAudio = create("Folder", SoundService, { Name = "ConnorVisionAudio" })
 local scanOnSound = create("Sound", scanAudio, {
 	Name = "ScanOn",
-	SoundId = "rbxassetid://2789243886", -- Start-Up Screen by AgentAST, CC BY 3.0
+	SoundId = "rbxassetid://5238929111", -- CONNOR_SCAN by ilo_en
 	Volume = .34,
-	PlaybackSpeed = 1.2,
 })
 local scanOffSound = create("Sound", scanAudio, {
 	Name = "ScanOff",
