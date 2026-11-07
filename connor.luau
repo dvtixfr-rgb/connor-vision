@@ -87,16 +87,11 @@ local scanOnSound = create("Sound", scanAudio, {
 	Name = "ScanOn",
 	Volume = .34,
 })
-local scanOffSound = create("Sound", scanAudio, {
-	Name = "ScanOff",
-	SoundId = "rbxassetid://124307033081669", -- Computer Shutdown by Sounds Evolved
-	Volume = .28,
-	PlaybackSpeed = 1.35,
-})
 local scanFallback = create("Sound", scanAudio, {
 	Name = "ScanFallback",
 	SoundId = "rbxassetid://12221990", -- Electronic ping by Roblox
 	Volume = .24,
+	PlaybackSpeed = 1.1,
 })
 
 local STARTUP_FILE = "connor-vision-scan-start-v1.mp3"
@@ -130,7 +125,7 @@ local function registerStartupSound(encodedAudio)
 end
 
 task.defer(function()
-	ContentProvider:PreloadAsync({ scanOffSound, scanFallback })
+	ContentProvider:PreloadAsync({ scanFallback })
 end)
 local function prepareStartupSound(encodedAudio)
 	local ok, soundId = pcall(registerStartupSound, encodedAudio)
@@ -144,12 +139,12 @@ local currentScanSound
 local function playScanSound(enabled)
 	if currentScanSound then
 		currentScanSound:Stop()
+		currentScanSound = nil
 	end
-	local sound = if enabled then scanOnSound else scanOffSound
-	if not sound.IsLoaded then
-		scanFallback.PlaybackSpeed = if enabled then 1.1 else .72
-		sound = scanFallback
+	if not enabled then
+		return
 	end
+	local sound = if scanOnSound.IsLoaded then scanOnSound else scanFallback
 	currentScanSound = sound
 	sound:Play()
 end
