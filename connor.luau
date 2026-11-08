@@ -976,6 +976,142 @@ local function project(camera, point)
 	return Vector2.new(projected.X, projected.Y) / scale, visible, projected.Z
 end
 
+local function makeProjectileScan()
+	local layer = rect(canvas, 0, 0, 0, 0, navy, 0, 5)
+	layer.Name = "ProjectileMarkers"
+	layer.Size = UDim2.fromScale(1, 1)
+	local groups = {
+		{
+			name = "Explosives", names = { Missile = true, Rocket = true, Part = true },
+			explosive = true, color = Color3.fromRGB(255, 128, 75), limit = 32,
+			objects = {}, markers = {}, shown = 0,
+		},
+		{
+			name = "Projectiles", names = { Bullet = true },
+			explosive = false, color = warningAmber, limit = 48,
+			objects = {}, markers = {}, shown = 0,
+		},
+	}
+	local debris
+	local folderRefresh = 0
+
+	local function makeMarker(group)
+		local marker = rect(layer, 0, 0, 0, 0, navy, 0, 5)
+		local size = if group.explosive then 5 else 4.5
+		local shadow = rect(marker, -size/2 - 1, -size/2 - 1, size + 2, size + 2, navy, .8, 5)
+		shadow.Rotation = 45
+		local diamond = rect(marker, -size/2, -size/2, size, size, group.color, 1, 5)
+		diamond.Rotation = 45
+		if group.explosive then
+			for _, x in { -13, 13 } do
+				for _, y in { -11, 11 } do
+					local left = if x < 0 then x else x - 5
+					local top = if y < 0 then y else y - 5
+					rect(marker, left, y, 6, 1.4, group.color, .93, 5)
+					rect(marker, x, top, 1.4, 6, group.color, .93, 5)
+				end
+			end
+		end
+		return marker
+	end
+
+	local function watchFolder(group, folder)
+		if group.folder == folder then
+			return
+		end
+		if group.added then
+			group.added:Disconnect()
+			group.removed:Disconnect()
+			group.added = nil
+			group.removed = nil
+		end
+		group.folder = folder
+		table.clear(group.objects)
+		if not folder then
+			return
+		end
+
+		local function track(object)
+			local isPart = object:IsA("BasePart")
+			if isPart or object:IsA("Model") then
+				group.objects[object] = isPart
+			end
+		end
+		group.added = folder.ChildAdded:Connect(track)
+		group.removed = folder.ChildRemoved:Connect(function(object)
+			group.objects[object] = nil
+		end)
+		for _, object in folder:GetChildren() do
+			track(object)
+		end
+	end
+
+	local function hideUnused(group, count)
+		for i = count + 1, group.shown do
+			group.markers[i].Visible = false
+		end
+		group.shown = count
+	end
+
+	local function update(camera, dt)
+		folderRefresh -= dt
+		if folderRefresh <= 0 then
+			folderRefresh = .18
+			local container = Workspace:FindFirstChild("Debris")
+			debris = if container and container:IsA("Folder") then container else nil
+			for _, group in groups do
+				local folder = debris and debris:FindFirstChild(group.name)
+				watchFolder(group, if folder and folder:IsA("Folder") then folder else nil)
+			end
+		end
+
+		for _, group in groups do
+			local count = 0
+			local folder = group.folder
+			if debris and debris.Parent == Workspace and debris.Name == "Debris"
+				and folder and folder.Parent == debris and folder.Name == group.name then
+				for object, isPart in group.objects do
+					if object.Parent ~= folder or not group.names[object.Name] then
+						continue
+					end
+					local position = if isPart then object.Position else object:GetPivot().Position
+					local point, onScreen, depth = project(camera, position)
+					if not onScreen or depth <= 0 then
+						continue
+					end
+					count += 1
+					local marker = group.markers[count]
+					if not marker then
+						marker = makeMarker(group)
+						group.markers[count] = marker
+					end
+					place(marker, point)
+					if count > group.shown then
+						marker.Visible = true
+					end
+					if count == group.limit then
+						break
+					end
+				end
+			end
+			hideUnused(group, count)
+		end
+	end
+
+	local function stop()
+		debris = nil
+		folderRefresh = 0
+		for _, group in groups do
+			watchFolder(group, nil)
+			hideUnused(group, 0)
+		end
+	end
+
+	return { update = update, stop = stop }
+end
+
+local projectileScan = makeProjectileScan()
+
 local function clipAxis(origin, delta, limit, first, last)
 	if math.abs(delta) < .0001 then
 		if origin < 0 or origin > limit then
@@ -1347,6 +1483,7 @@ end
 
 local function stopScan()
 	scanEnabled = false
+	projectileScan.stop()
 	if flagStatus then
 		flagStatus.close()
 	end
@@ -1364,6 +1501,7 @@ local function render(dt)
 	local root = aliveRoot(character)
 	if not camera or not root then
 		strength = 0
+		projectileScan.stop()
 		if flagStatus then
 			flagStatus.close()
 		end
@@ -1418,6 +1556,9 @@ local function render(dt)
 		end
 	end
 	updateGrid(camera)
+	if scanEnabled then
+		projectileScan.update(camera, dt)
+	end
 	if scanEnabled and hasPlayerScan then
 		if flagStatus then
 			flagStatus.update(camera)
@@ -1508,6 +1649,7 @@ local function cleanup()
 	end
 
 	RunService:UnbindFromRenderStep(RENDER_STEP)
+	projectileScan.stop()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
