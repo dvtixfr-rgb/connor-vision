@@ -403,6 +403,9 @@ local function aliveRoot(character)
 end
 
 local function makeRemoteScan()
+	local guiService = game:GetService("GuiService")
+	local pitchLimit = math.rad(85)
+	local lookSensitivity = .003
 	local platformOffset = Vector3.new(14000, 900, 14000)
 	local minimumY = Workspace.FallenPartsDestroyHeight + 150
 	local platform = create("Part", Workspace, {
@@ -419,12 +422,83 @@ local function makeRemoteScan()
 		return math.abs(offset.X) <= 34 and math.abs(offset.Z) <= 34
 	end
 
+	local function releaseMouse(current)
+		if current.mouseLock and UserInputService.MouseBehavior == current.mouseLock then
+			UserInputService.MouseBehavior = current.previousMouseBehavior
+		end
+		current.mouseLock = nil
+	end
+
+	local function updateView(current, camera)
+		if not current.lookPivot then
+			local head = current.standIn:FindFirstChild("Head")
+			local headPosition = if head and head:IsA("BasePart") then head.Position else current.origin
+			local focus = current.focus.Position
+			local pivot = if (focus - headPosition).Magnitude <= 6 then focus else headPosition
+			local firstPerson = player.CameraMode == Enum.CameraMode.LockFirstPerson
+				or (current.view.Position - pivot).Magnitude < 1
+			current.lookPivot = if firstPerson then current.view.Position else pivot
+			current.firstPerson = firstPerson
+			current.freeLook = firstPerson or current.mouseBehavior == Enum.MouseBehavior.LockCenter
+			if firstPerson then
+				for _, item in current.standIn:GetDescendants() do
+					if item:IsA("BasePart") and (item == head or item:FindFirstAncestorOfClass("Accessory")) then
+						item.LocalTransparencyModifier = 1
+					end
+				end
+			end
+		end
+
+		if camera.CameraType ~= Enum.CameraType.Scriptable then
+			camera.CameraType = Enum.CameraType.Scriptable
+		end
+
+		local mouseLock
+		if UserInputService.MouseEnabled and not guiService.MenuIsOpen and not UserInputService:GetFocusedTextBox() then
+			if current.freeLook then
+				mouseLock = Enum.MouseBehavior.LockCenter
+			elseif UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+				mouseLock = Enum.MouseBehavior.LockCurrentPosition
+			end
+		end
+		if mouseLock then
+			local mouseBehavior = UserInputService.MouseBehavior
+			if not current.mouseLock then
+				current.previousMouseBehavior = if mouseBehavior == Enum.MouseBehavior.LockCurrentPosition
+					then Enum.MouseBehavior.Default else mouseBehavior
+			end
+			current.mouseLock = mouseLock
+			if mouseBehavior ~= mouseLock then
+				UserInputService.MouseBehavior = mouseLock
+			end
+			local delta = UserInputService:GetMouseDelta()
+			if delta.X ~= 0 or delta.Y ~= 0 then
+				local view = current.view
+				local pitch = math.asin(math.clamp(view.LookVector.Y, -1, 1))
+				local tilt = math.clamp(pitch - delta.Y * lookSensitivity, -pitchLimit, pitchLimit) - pitch
+				local yawRotation = CFrame.fromAxisAngle(Vector3.yAxis, -delta.X * lookSensitivity)
+				local pitchRotation = CFrame.fromAxisAngle(view.RightVector, tilt)
+				local pivot = current.lookPivot
+				current.view = CFrame.new(pivot) * yawRotation * pitchRotation * (view - pivot)
+				current.focus = if current.firstPerson
+					then CFrame.new(current.view.Position + current.view.LookVector)
+					else CFrame.new(pivot)
+			end
+		else
+			releaseMouse(current)
+		end
+
+		camera.CFrame = current.view
+		camera.Focus = current.focus
+	end
+
 	local function stop(restoreCharacter)
 		local current = session
 		if not current then
 			return
 		end
 		session = nil
+		releaseMouse(current)
 
 		if restoreCharacter and player.Character == current.character
 			and aliveRoot(current.character) == current.root and nearPlatform(current.root) then
@@ -492,7 +566,7 @@ local function makeRemoteScan()
 			standIn = standIn, standInHumanoid = standInHumanoid, camera = camera,
 			cameraSubject = camera.CameraSubject, cameraType = camera.CameraType,
 			cameraLocked = camera.CameraType == Enum.CameraType.Scriptable,
-			view = camera.CFrame, focus = camera.Focus,
+			view = camera.CFrame, focus = camera.Focus, mouseBehavior = UserInputService.MouseBehavior,
 		}
 		standIn.Parent = Workspace
 		if not session.cameraLocked then
@@ -532,20 +606,17 @@ local function makeRemoteScan()
 				return nil, true
 			end
 
-			-- Keep the last view of the map if a custom camera stops following the stand-in.
+			-- Keep camera controls around the stand-in if the game's camera stops following it.
 			local view = camera.CFrame
 			if current.cameraLocked or camera.CameraSubject ~= current.standInHumanoid
 				or camera.CameraType == Enum.CameraType.Scriptable
 				or (view.Position - root.Position).Magnitude < (view.Position - current.origin).Magnitude then
 				current.cameraLocked = true
-				if camera.CameraType ~= Enum.CameraType.Scriptable then
-					camera.CameraType = Enum.CameraType.Scriptable
-				end
-				camera.CFrame = current.view
-				camera.Focus = current.focus
+				updateView(current, camera)
 			else
 				current.view = view
 				current.focus = camera.Focus
+				current.mouseBehavior = UserInputService.MouseBehavior
 			end
 			-- Keep the body on the pad without anchoring its networked assembly.
 			current.humanoid:Move(Vector3.zero)
