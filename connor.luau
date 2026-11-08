@@ -428,9 +428,10 @@ local function makeRemoteScan()
 
 		if restoreCharacter and player.Character == current.character
 			and aliveRoot(current.character) == current.root and nearPlatform(current.root) then
-			current.character:PivotTo(current.pivot)
-			current.root.AssemblyLinearVelocity = Vector3.zero
-			current.root.AssemblyAngularVelocity = Vector3.zero
+			if pcall(current.character.PivotTo, current.character, current.pivot) then
+				current.root.AssemblyLinearVelocity = Vector3.zero
+				current.root.AssemblyAngularVelocity = Vector3.zero
+			end
 		end
 
 		local camera = current.camera
@@ -439,7 +440,9 @@ local function makeRemoteScan()
 				local subject = current.cameraSubject
 				camera.CameraSubject = subject and subject.Parent and subject or current.humanoid
 			end
-			if current.cameraType == Enum.CameraType.Scriptable and camera.CameraType == Enum.CameraType.Custom then
+			if current.cameraLocked and camera.CameraType == Enum.CameraType.Scriptable then
+				camera.CFrame = current.view
+				camera.Focus = current.focus
 				camera.CameraType = current.cameraType
 			end
 		end
@@ -451,7 +454,7 @@ local function makeRemoteScan()
 		local character = player.Character
 		local root, humanoid = aliveRoot(character)
 		if not camera or not root or not humanoid or root.Anchored or humanoid.SeatPart then
-			return false
+			return
 		end
 
 		local wasArchivable = character.Archivable
@@ -459,12 +462,12 @@ local function makeRemoteScan()
 		local cloned, standIn = pcall(character.Clone, character)
 		character.Archivable = wasArchivable
 		if not cloned or not standIn then
-			return false
+			return
 		end
 		local standInHumanoid = standIn:FindFirstChildOfClass("Humanoid")
 		if not standInHumanoid or not standIn:FindFirstChild("HumanoidRootPart") then
 			standIn:Destroy()
-			return false
+			return
 		end
 
 		standIn.Name = "ConnorScanStandIn"
@@ -488,18 +491,22 @@ local function makeRemoteScan()
 			character = character, root = root, humanoid = humanoid, pivot = pivot, origin = origin,
 			standIn = standIn, standInHumanoid = standInHumanoid, camera = camera,
 			cameraSubject = camera.CameraSubject, cameraType = camera.CameraType,
+			cameraLocked = camera.CameraType == Enum.CameraType.Scriptable,
+			view = camera.CFrame, focus = camera.Focus,
 		}
 		standIn.Parent = Workspace
-		camera.CameraSubject = standInHumanoid
-		if camera.CameraType == Enum.CameraType.Scriptable then
-			camera.CameraType = Enum.CameraType.Custom
+		if not session.cameraLocked then
+			camera.CameraSubject = standInHumanoid
 		end
 
 		local pad = origin + platformOffset
 		platform.Position = Vector3.new(pad.X, math.max(pad.Y, minimumY), pad.Z)
 		local height = math.max(3, humanoid.HipHeight + root.Size.Y / 2)
 		local landing = platform.Position + Vector3.new(0, platform.Size.Y / 2 + height + .25, 0)
-		character:PivotTo(pivot + (landing - origin))
+		if not pcall(character.PivotTo, character, pivot + (landing - origin)) then
+			stop(false)
+			return
+		end
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
 
@@ -508,20 +515,37 @@ local function makeRemoteScan()
 				pcall(player.RequestStreamAroundAsync, player, origin, 2)
 			end)
 		end
-		return true
 	end
 
 	return {
 		start = start,
 		stop = stop,
-		position = function(camera, root)
+		update = function(camera, root)
 			local current = session
-			if not current or root ~= current.root or camera ~= current.camera
-				or camera.CameraSubject ~= current.standInHumanoid or camera.CameraType == Enum.CameraType.Scriptable
-				or not current.standIn.Parent
+			if not current then
+				return nil, false
+			end
+			if root ~= current.root or camera ~= current.camera or not current.standIn.Parent
 				or not platform.Parent or not nearPlatform(root)
 				or math.abs(root.Position.Y - platform.Position.Y) > 45 then
-				return nil
+				stop(true)
+				return nil, true
+			end
+
+			-- Keep the last view of the map if a custom camera stops following the stand-in.
+			local view = camera.CFrame
+			if current.cameraLocked or camera.CameraSubject ~= current.standInHumanoid
+				or camera.CameraType == Enum.CameraType.Scriptable
+				or (view.Position - root.Position).Magnitude < (view.Position - current.origin).Magnitude then
+				current.cameraLocked = true
+				if camera.CameraType ~= Enum.CameraType.Scriptable then
+					camera.CameraType = Enum.CameraType.Scriptable
+				end
+				camera.CFrame = current.view
+				camera.Focus = current.focus
+			else
+				current.view = view
+				current.focus = camera.Focus
 			end
 			-- Keep the body on the pad without anchoring its networked assembly.
 			current.humanoid:Move(Vector3.zero)
@@ -1847,6 +1871,12 @@ local function updateEnemies(camera, localPosition, dt)
 	end
 end
 
+local function resetScanOrigin()
+	scanStarting = true
+	gridDatum = nil
+	sampleTimer = 0
+end
+
 local function stopScan(restoreCharacter)
 	scanEnabled = false
 	scanStarting = false
@@ -1870,10 +1900,10 @@ local function render(dt)
 	local root = aliveRoot(character)
 	local position = root and root.Position
 	if remoteScan and scanEnabled then
-		position = remoteScan.position(camera, root)
-		if not position then
-			stopScan()
-			position = root and root.Position
+		local remotePosition, relocationEnded = remoteScan.update(camera, root)
+		position = remotePosition or (root and root.Position)
+		if relocationEnded then
+			resetScanOrigin()
 		end
 	end
 	if not camera or not root then
@@ -1984,13 +2014,11 @@ local function onInputBegan(input, handled)
 		if scanEnabled then
 			stopScan()
 		else
-			if remoteScan and not remoteScan.start() then
-				return
-			end
 			scanEnabled = true
-			scanStarting = true
-			gridDatum = nil
-			sampleTimer = 0
+			resetScanOrigin()
+			if remoteScan then
+				remoteScan.start()
+			end
 		end
 		playScanSound(scanEnabled)
 	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and not scanStarting and flagStatus then
@@ -2004,7 +2032,12 @@ end
 local connections = {
 	UserInputService.InputBegan:Connect(onInputBegan),
 	player.CharacterRemoving:Connect(function()
-		stopScan(false)
+		if remoteScan and scanEnabled then
+			remoteScan.stop(false)
+			resetScanOrigin()
+		else
+			stopScan(false)
+		end
 	end),
 }
 
