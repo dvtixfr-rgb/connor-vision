@@ -1,5 +1,5 @@
 -- Connor Vision
--- Q toggles analysis. E opens flag status in place 2336379484.
+-- Q toggles analysis. E hides or shows flag status during analysis in place 2336379484.
 -- In Studio, use a LocalScript in StarterPlayerScripts.
 
 local Players = game:GetService("Players")
@@ -468,8 +468,19 @@ local function makeFlagStatus()
 		end
 	end
 
+	local function revealPlate(x, y, width, height, paddingX, paddingY, color, opacity)
+		local fullWidth, fullHeight = width + paddingX * 2, height + paddingY * 2
+		local mask = rect(overlay, x - paddingX, y - paddingY, 0, fullHeight, navy, 0, 2)
+		mask.ClipsDescendants = true
+		mask.Visible = false
+		local frame = rect(mask, paddingX, paddingY, width, height, color, opacity, 2)
+		local edge = rect(mask, 0, paddingY + 2, 2, height - 4, pale, .7, 5)
+		return { mask = mask, frame = frame, edge = edge, width = fullWidth, height = fullHeight }
+	end
+
 	-- Connor's Find Deviant stack uses a solid objective plate above indented subobjectives.
-	local header = rect(overlay, 0, 0, headerWidth, headerHeight, navy, 0, 2)
+	local headerPlate = revealPlate(0, 0, headerWidth, headerHeight, 16, 2, navy, 0)
+	local header = headerPlate.frame
 	rect(header, 8, 4, headerWidth - 16, headerHeight - 8, pale, .98, 2)
 	rect(header, -14, 4, 27, 1, pale, .34, 2)
 	rect(header, headerWidth - 9, headerHeight - 5, 23, 1, pale, .34, 2)
@@ -489,7 +500,8 @@ local function makeFlagStatus()
 	local rows = {}
 	for index = 1, 2 do
 		local y = headerHeight + rowGap + (index - 1) * (readoutHeight + rowGap)
-		local row = rect(overlay, rowInset, y, readoutWidth, readoutHeight, navy, .84, 2)
+		local plate = revealPlate(rowInset, y, readoutWidth, readoutHeight, 5, 3, navy, .84)
+		local row = plate.frame
 		fade(row, 0, { NumberSequenceKeypoint.new(0, .03), NumberSequenceKeypoint.new(1, .26) })
 		brackets(row, -4, -2, readoutWidth + 8, readoutHeight + 4, .67)
 		local role = label(row, 14, 0, 88, readoutHeight, pale, 15, light)
@@ -497,7 +509,39 @@ local function makeFlagStatus()
 		state.TextXAlignment = Enum.TextXAlignment.Right
 
 		row.Visible = false
-		rows[index] = { frame = row, role = role, state = state }
+		plate.role = role
+		plate.state = state
+		rows[index] = plate
+	end
+	local wanted = false
+	local revealProgress = 0
+	local drawnProgress
+	local railLength = 0
+
+	local function reveal(plate, fraction)
+		local visible = fraction > 0 and plate.frame.Visible
+		plate.mask.Visible = visible
+		if not visible then
+			return
+		end
+		local eased = 1 - (1 - fraction)^3
+		local width = math.ceil(plate.width * eased)
+		plate.mask.Size = UDim2.fromOffset(width, plate.height)
+		plate.edge.Visible = fraction < 1
+		plate.edge.Position = UDim2.new(1, -2, 0, 4)
+	end
+
+	local function drawReveal()
+		if drawnProgress == revealProgress then
+			return
+		end
+		drawnProgress = revealProgress
+		reveal(headerPlate, math.clamp(revealProgress / .53, 0, 1))
+		for index, row in rows do
+			local delay = .21 + .22 * (index - 1)
+			reveal(row, math.clamp((revealProgress - delay) / (1 - delay), 0, 1))
+		end
+		rail.Size = UDim2.fromOffset(1, railLength * math.clamp((revealProgress - .20) / .60, 0, 1))
 	end
 
 	local parts = {}
@@ -811,7 +855,11 @@ local function makeFlagStatus()
 		for index = count + 1, #rows do
 			rows[index].frame.Visible = false
 		end
-		rail.Size = UDim2.fromOffset(1, (readoutHeight + rowGap) * count)
+		local length = (readoutHeight + rowGap) * count
+		if railLength ~= length then
+			railLength = length
+			drawnProgress = nil
+		end
 	end
 
 	local function resizeReadouts(camera)
@@ -833,24 +881,42 @@ local function makeFlagStatus()
 		end
 	end)
 
-	return {
-		carriers = carriers,
-		toggle = function(camera)
-			if statusGui.Enabled then
-				statusGui.Enabled = false
-				return
-			end
+	local function open()
+		wanted = true
+		if not statusGui.Enabled then
 			startIndex()
-			resizeReadouts(camera)
 			statusGui.Enabled = true
 			updateStatus()
+			drawReveal()
+		end
+	end
+
+	return {
+		carriers = carriers,
+		open = open,
+		toggle = function()
+			if wanted then
+				wanted = false
+			else
+				open()
+			end
 		end,
 		close = function()
+			wanted = false
+			revealProgress = 0
+			drawnProgress = nil
 			statusGui.Enabled = false
 		end,
-		update = function(camera)
-			if statusGui.Enabled then
-				resizeReadouts(camera)
+		update = function(camera, dt)
+			if not statusGui.Enabled then
+				return
+			end
+			resizeReadouts(camera)
+			local step = if wanted then dt / .32 else -dt / .18
+			revealProgress = math.clamp(revealProgress + step, 0, 1)
+			drawReveal()
+			if not wanted and revealProgress == 0 then
+				statusGui.Enabled = false
 			end
 		end,
 		destroy = function()
@@ -871,6 +937,7 @@ local flagStatus = if flagMode then makeFlagStatus() else nil
 
 -- Scan lighting, grid projection, and player markers
 local scanEnabled = false
+local scanStarting = false
 local strength = 0
 local gridDatum
 local sampleTimer = 0
@@ -993,7 +1060,7 @@ local function makeProjectileScan()
 		},
 	}
 	local debris
-	local folderRefresh = 0
+	local deadlines = setmetatable({}, { __mode = "k" })
 
 	local function makeMarker(group)
 		local marker = rect(layer, 0, 0, 0, 0, navy, 0, 5)
@@ -1034,7 +1101,12 @@ local function makeProjectileScan()
 		local function track(object)
 			local isPart = object:IsA("BasePart")
 			if isPart or object:IsA("Model") then
-				group.objects[object] = isPart
+				local now = os.clock()
+				local deadline = deadlines[object] or now + 15
+				deadlines[object] = deadline
+				if now < deadline then
+					group.objects[object] = isPart
+				end
 			end
 		end
 		group.added = folder.ChildAdded:Connect(track)
@@ -1053,24 +1125,38 @@ local function makeProjectileScan()
 		group.shown = count
 	end
 
-	local function update(camera, dt)
+	local function refreshFolders()
+		local container = Workspace:FindFirstChild("Debris")
+		debris = if container and container:IsA("Folder") then container else nil
+		for _, group in groups do
+			local folder = debris and debris:FindFirstChild(group.name)
+			watchFolder(group, if folder and folder:IsA("Folder") then folder else nil)
+		end
+	end
+
+	-- Keep observing births when Q is off so toggling analysis never resets their age.
+	refreshFolders()
+	local folderRefresh = .18
+	local folderWatcher = RunService.Heartbeat:Connect(function(dt)
 		folderRefresh -= dt
 		if folderRefresh <= 0 then
 			folderRefresh = .18
-			local container = Workspace:FindFirstChild("Debris")
-			debris = if container and container:IsA("Folder") then container else nil
-			for _, group in groups do
-				local folder = debris and debris:FindFirstChild(group.name)
-				watchFolder(group, if folder and folder:IsA("Folder") then folder else nil)
-			end
+			refreshFolders()
 		end
+	end)
 
+	local function update(camera)
+		local now = os.clock()
 		for _, group in groups do
 			local count = 0
 			local folder = group.folder
 			if debris and debris.Parent == Workspace and debris.Name == "Debris"
 				and folder and folder.Parent == debris and folder.Name == group.name then
 				for object, isPart in group.objects do
+					if now >= deadlines[object] then
+						group.objects[object] = nil
+						continue
+					end
 					if object.Parent ~= folder or not group.names[object.Name] then
 						continue
 					end
@@ -1099,18 +1185,160 @@ local function makeProjectileScan()
 	end
 
 	local function stop()
-		debris = nil
-		folderRefresh = 0
 		for _, group in groups do
-			watchFolder(group, nil)
 			hideUnused(group, 0)
 		end
 	end
 
-	return { update = update, stop = stop }
+	local function destroy()
+		folderWatcher:Disconnect()
+		for _, group in groups do
+			watchFolder(group, nil)
+		end
+		stop()
+	end
+
+	return { update = update, stop = stop, destroy = destroy }
 end
 
 local projectileScan = makeProjectileScan()
+
+local function makeFloorSweep()
+	local rows = {}
+	local leadingEdge = -13
+	for index = 1, 14 do
+		local size = if index <= 7 then 4.5 else 8.5
+		local depth = leadingEdge + size / 2
+		rows[index] = {
+			depth = depth, size = size, columns = if index <= 7 then 5 else 6,
+			at = .07 + (depth + 13) / 155,
+		}
+		leadingEdge += size
+	end
+	local colors = {
+		Color3.fromRGB(221, 242, 255), Color3.fromRGB(147, 201, 246),
+		Color3.fromRGB(196, 227, 251), Color3.fromRGB(239, 248, 255),
+	}
+	local available, active = {}, {}
+	local folder
+	local origin, forward, side
+	local floorHeight
+	local nextRow, elapsed = 1, 0
+	local pending = false
+	local ray = RaycastParams.new()
+	ray.FilterType = Enum.RaycastFilterType.Exclude
+	ray.IgnoreWater = true
+	ray.RespectCanCollide = true
+	local down = Vector3.new(0, -35, 0)
+	local rise = Vector3.new(0, 4, 0)
+
+	local function release(index)
+		local tile = active[index]
+		tile.part.Transparency = 1
+		table.insert(available, tile)
+		active[index] = active[#active]
+		active[#active] = nil
+	end
+
+	local function stop()
+		pending = false
+		origin = nil
+		for index = #active, 1, -1 do
+			release(index)
+		end
+	end
+
+	local function paintRow(row, index)
+		local center = origin + forward * row.depth + rise
+		local width = row.size - .12
+		for column = -row.columns, row.columns do
+			local hit = Workspace:Raycast(center + side * (column * row.size), down, ray)
+			if not hit or hit.Normal.Y < .65 or math.abs(hit.Position.Y - floorHeight) > 12 then
+				continue
+			end
+			if not folder then
+				folder = create("Folder", Workspace, { Name = "ConnorFloorSweep" })
+			end
+			local tile = table.remove(available)
+			if not tile then
+				tile = { part = create("Part", folder, {
+					Name = "SweepTile", Anchored = true, CanCollide = false,
+					CanTouch = false, CanQuery = false, CastShadow = false,
+					Material = Enum.Material.Neon, Transparency = 1,
+				}) }
+			end
+			local normal = hit.Normal
+			local right = (side - normal * side:Dot(normal)).Unit
+			local part = tile.part
+			part.Size = Vector3.new(width, .028, width)
+			part.CFrame = CFrame.fromMatrix(hit.Position + normal * .036, right, normal, right:Cross(normal))
+			part.Color = colors[(column * 7 + index * 5) % #colors + 1]
+			tile.at = row.at + math.abs(column) * .004 + (column + index) % 3 * .007
+			table.insert(active, tile)
+		end
+	end
+
+	local function update(camera, position, dt)
+		if pending then
+			stop()
+			origin = position
+			floorHeight = gridDatum
+			local look = camera.CFrame.LookVector
+			forward = Vector3.new(look.X, 0, look.Z)
+			forward = if forward.Magnitude > .02 then forward.Unit else Vector3.new(0, 0, -1)
+			side = forward:Cross(Vector3.yAxis)
+			local excluded = probeRay.FilterDescendantsInstances
+			local debris = Workspace:FindFirstChild("Debris")
+			if debris then
+				table.insert(excluded, debris)
+			end
+			ray.FilterDescendantsInstances = excluded
+			nextRow, elapsed = 1, 0
+		end
+		if not origin then
+			return
+		end
+		elapsed += dt
+		-- Keep the one-shot raycasts spread over the moving front.
+		local budget = 3
+		while nextRow <= #rows and rows[nextRow].at <= elapsed and budget > 0 do
+			local row = rows[nextRow]
+			if elapsed - row.at < .21 then
+				paintRow(row, nextRow)
+			end
+			nextRow += 1
+			budget -= 1
+		end
+		for index = #active, 1, -1 do
+			local tile = active[index]
+			local age = elapsed - tile.at
+			if age >= .21 then
+				release(index)
+			elseif age >= 0 then
+				local peak = math.min(age / .025, 1)
+				local tail = 1 - math.clamp((age - .042) / .168, 0, 1)
+				tile.part.Transparency = 1 - .88 * peak * tail^2
+			end
+		end
+		if nextRow > #rows and #active == 0 then
+			origin = nil
+		end
+	end
+
+	return {
+		start = function() pending = true end,
+		stop = stop,
+		update = update,
+		destroy = function()
+			stop()
+			if folder then
+				folder:Destroy()
+			end
+		end,
+	}
+end
+
+local floorSweep = makeFloorSweep()
 
 local function clipAxis(origin, delta, limit, first, last)
 	if math.abs(delta) < .0001 then
@@ -1483,7 +1711,9 @@ end
 
 local function stopScan()
 	scanEnabled = false
+	scanStarting = false
 	projectileScan.stop()
+	floorSweep.stop()
 	if flagStatus then
 		flagStatus.close()
 	end
@@ -1502,6 +1732,7 @@ local function render(dt)
 	if not camera or not root then
 		strength = 0
 		projectileScan.stop()
+		floorSweep.stop()
 		if flagStatus then
 			flagStatus.close()
 		end
@@ -1539,6 +1770,13 @@ local function render(dt)
 		sampleTimer = .22
 		sampleSurroundings(camera, pixels, root.Position)
 	end
+	if scanStarting then
+		scanStarting = false
+		floorSweep.start()
+		if flagStatus then
+			flagStatus.open()
+		end
+	end
 	local adjust = 1 - math.exp(-dt * 5)
 	tone.tint = tone.tint:Lerp(targetTone.tint, adjust)
 	tone.brightness += (targetTone.brightness - tone.brightness) * adjust
@@ -1557,11 +1795,12 @@ local function render(dt)
 	end
 	updateGrid(camera)
 	if scanEnabled then
-		projectileScan.update(camera, dt)
+		projectileScan.update(camera)
+		floorSweep.update(camera, root.Position, dt)
 	end
 	if scanEnabled and hasPlayerScan then
 		if flagStatus then
-			flagStatus.update(camera)
+			flagStatus.update(camera, dt)
 		end
 		markerLayer.Visible = true
 		updateEnemies(camera, root.Position, dt)
@@ -1600,14 +1839,15 @@ local function onInputBegan(input, handled)
 			stopScan()
 		else
 			scanEnabled = true
+			scanStarting = true
 			gridDatum = nil
 			sampleTimer = 0
 		end
 		playScanSound(scanEnabled)
-	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and flagStatus then
+	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and not scanStarting and flagStatus then
 		local camera = Workspace.CurrentCamera
 		if camera and aliveRoot(player.Character) then
-			flagStatus.toggle(camera)
+			flagStatus.toggle()
 		end
 	end
 end
@@ -1649,7 +1889,8 @@ local function cleanup()
 	end
 
 	RunService:UnbindFromRenderStep(RENDER_STEP)
-	projectileScan.stop()
+	projectileScan.destroy()
+	floorSweep.destroy()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
