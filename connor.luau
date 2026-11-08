@@ -402,6 +402,141 @@ local function aliveRoot(character)
 	return nil
 end
 
+local function makeRemoteScan()
+	local platformOffset = Vector3.new(14000, 900, 14000)
+	local minimumY = Workspace.FallenPartsDestroyHeight + 150
+	local platform = create("Part", Workspace, {
+		Name = "ConnorScanPlatform",
+		Anchored = true,
+		CanTouch = false,
+		Size = Vector3.new(64, 2, 64),
+		Position = Vector3.new(platformOffset.X, math.max(platformOffset.Y, minimumY), platformOffset.Z),
+	})
+	local session
+
+	local function nearPlatform(root)
+		local offset = root.Position - platform.Position
+		return math.abs(offset.X) <= 34 and math.abs(offset.Z) <= 34
+	end
+
+	local function stop(restoreCharacter)
+		local current = session
+		if not current then
+			return
+		end
+		session = nil
+
+		if restoreCharacter and player.Character == current.character
+			and aliveRoot(current.character) == current.root and nearPlatform(current.root) then
+			current.character:PivotTo(current.pivot)
+			current.root.AssemblyLinearVelocity = Vector3.zero
+			current.root.AssemblyAngularVelocity = Vector3.zero
+		end
+
+		local camera = current.camera
+		if camera.Parent then
+			if camera.CameraSubject == current.standInHumanoid then
+				local subject = current.cameraSubject
+				camera.CameraSubject = subject and subject.Parent and subject or current.humanoid
+			end
+			if current.cameraType == Enum.CameraType.Scriptable and camera.CameraType == Enum.CameraType.Custom then
+				camera.CameraType = current.cameraType
+			end
+		end
+		current.standIn:Destroy()
+	end
+
+	local function start()
+		local camera = Workspace.CurrentCamera
+		local character = player.Character
+		local root, humanoid = aliveRoot(character)
+		if not camera or not root or not humanoid or root.Anchored or humanoid.SeatPart then
+			return false
+		end
+
+		local wasArchivable = character.Archivable
+		character.Archivable = true
+		local cloned, standIn = pcall(character.Clone, character)
+		character.Archivable = wasArchivable
+		if not cloned or not standIn then
+			return false
+		end
+		local standInHumanoid = standIn:FindFirstChildOfClass("Humanoid")
+		if not standInHumanoid or not standIn:FindFirstChild("HumanoidRootPart") then
+			standIn:Destroy()
+			return false
+		end
+
+		standIn.Name = "ConnorScanStandIn"
+		standInHumanoid.EvaluateStateMachine = false
+		standInHumanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		for _, item in standIn:GetDescendants() do
+			if item:IsA("LuaSourceContainer") or item:IsA("Sound") then
+				item:Destroy()
+			elseif item:IsA("BasePart") then
+				item.Anchored = true
+				item.CanCollide = false
+				item.CanTouch = false
+				item.CanQuery = false
+				item.LocalTransparencyModifier = 0
+			end
+		end
+
+		local origin = root.Position
+		local pivot = character:GetPivot()
+		session = {
+			character = character, root = root, humanoid = humanoid, pivot = pivot, origin = origin,
+			standIn = standIn, standInHumanoid = standInHumanoid, camera = camera,
+			cameraSubject = camera.CameraSubject, cameraType = camera.CameraType,
+		}
+		standIn.Parent = Workspace
+		camera.CameraSubject = standInHumanoid
+		if camera.CameraType == Enum.CameraType.Scriptable then
+			camera.CameraType = Enum.CameraType.Custom
+		end
+
+		local pad = origin + platformOffset
+		platform.Position = Vector3.new(pad.X, math.max(pad.Y, minimumY), pad.Z)
+		local height = math.max(3, humanoid.HipHeight + root.Size.Y / 2)
+		local landing = platform.Position + Vector3.new(0, platform.Size.Y / 2 + height + .25, 0)
+		character:PivotTo(pivot + (landing - origin))
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+
+		if Workspace.StreamingEnabled then
+			task.spawn(function()
+				pcall(player.RequestStreamAroundAsync, player, origin, 2)
+			end)
+		end
+		return true
+	end
+
+	return {
+		start = start,
+		stop = stop,
+		position = function(camera, root)
+			local current = session
+			if not current or root ~= current.root or camera ~= current.camera
+				or camera.CameraSubject ~= current.standInHumanoid or camera.CameraType == Enum.CameraType.Scriptable
+				or not current.standIn.Parent
+				or not platform.Parent or not nearPlatform(root)
+				or math.abs(root.Position.Y - platform.Position.Y) > 45 then
+				return nil
+			end
+			-- Keep the body on the pad without anchoring its networked assembly.
+			current.humanoid:Move(Vector3.zero)
+			current.humanoid.Jump = false
+			return current.origin
+		end,
+		destroy = function()
+			stop(true)
+			platform:Destroy()
+		end,
+	}
+end
+
+local remoteScan = if game.PlaceId == 130960021905304 then makeRemoteScan() else nil
+
 -- Flag HUD and pickup tracking
 local function makeFlagStatus()
 	local pickupRadius = 3.6
@@ -1712,9 +1847,12 @@ local function updateEnemies(camera, localPosition, dt)
 	end
 end
 
-local function stopScan()
+local function stopScan(restoreCharacter)
 	scanEnabled = false
 	scanStarting = false
+	if remoteScan then
+		remoteScan.stop(restoreCharacter ~= false)
+	end
 	projectileScan.stop()
 	floorSweep.stop()
 	if flagStatus then
@@ -1730,6 +1868,14 @@ local function render(dt)
 	local camera = Workspace.CurrentCamera
 	local character = player.Character
 	local root = aliveRoot(character)
+	local position = root and root.Position
+	if remoteScan and scanEnabled then
+		position = remoteScan.position(camera, root)
+		if not position then
+			stopScan()
+			position = root and root.Position
+		end
+	end
 	if not camera or not root then
 		strength = 0
 		projectileScan.stop()
@@ -1767,7 +1913,7 @@ local function render(dt)
 	sampleTimer -= dt
 	if sampleTimer <= 0 then
 		sampleTimer = .22
-		sampleSurroundings(camera, pixels, root.Position)
+		sampleSurroundings(camera, pixels, position)
 	end
 	if scanStarting then
 		scanStarting = false
@@ -1795,12 +1941,12 @@ local function render(dt)
 	updateGrid(camera)
 	if scanEnabled then
 		projectileScan.update(camera)
-		floorSweep.update(camera, root.Position, dt)
+		floorSweep.update(camera, position, dt)
 		if flagStatus then
 			flagStatus.update(camera, dt)
 		end
 		markerLayer.Visible = true
-		updateEnemies(camera, root.Position, dt)
+		updateEnemies(camera, position, dt)
 	end
 end
 
@@ -1838,6 +1984,9 @@ local function onInputBegan(input, handled)
 		if scanEnabled then
 			stopScan()
 		else
+			if remoteScan and not remoteScan.start() then
+				return
+			end
 			scanEnabled = true
 			scanStarting = true
 			gridDatum = nil
@@ -1854,7 +2003,9 @@ end
 
 local connections = {
 	UserInputService.InputBegan:Connect(onInputBegan),
-	player.CharacterRemoving:Connect(stopScan),
+	player.CharacterRemoving:Connect(function()
+		stopScan(false)
+	end),
 }
 
 for _, candidate in Players:GetPlayers() do
@@ -1887,6 +2038,9 @@ local function cleanup()
 	end
 
 	RunService:UnbindFromRenderStep(RENDER_STEP)
+	if remoteScan then
+		remoteScan.destroy()
+	end
 	projectileScan.destroy()
 	floorSweep.destroy()
 	for _, connection in connections do
