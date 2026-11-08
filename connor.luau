@@ -12,7 +12,7 @@ local Workspace = game:GetService("Workspace")
 
 local flagMode = game.PlaceId == 2336379484
 local prisonMode = game.PlaceId == 155615604
-local hasPlayerScan = flagMode or prisonMode
+local generalMode = not flagMode and not prisonMode
 
 local FLAGS_BY_TEAM = {
 	["Green Team"] = { part = "greenflag", brick = BrickColor.new("Bright green") },
@@ -37,6 +37,7 @@ if type(previousCleanup) == "function" then
 end
 
 local blue = Color3.fromRGB(107, 163, 218)
+local playerCyan = Color3.fromRGB(112, 205, 248)
 local amber = Color3.fromRGB(238, 185, 43)
 local warningAmber = Color3.fromRGB(255, 214, 117)
 local carrierOrange = Color3.fromRGB(255, 109, 67)
@@ -195,12 +196,11 @@ local canvas = rect(gui, 0, 0, 0, 0, navy, 0, 3)
 local canvasScale = create("UIScale", canvas, { Scale = 1 })
 local gridLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 3)
 gridLayer.Size = UDim2.fromScale(1, 1)
+local highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
 local markerLayer
-local highlightFolder
-if hasPlayerScan then
+if not generalMode then
 	markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
 	markerLayer.Size = UDim2.fromScale(1, 1)
-	highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
 end
 local gridBands = {}
 local gridNodes = {}
@@ -366,7 +366,9 @@ local function watchProtection(visual, character, root)
 end
 
 local function hideEnemy(visual)
-	visual.marker.Visible = false
+	if visual.marker then
+		visual.marker.Visible = false
+	end
 	stopWatchingProtection(visual)
 	if visual.highlight then
 		visual.highlight:Destroy()
@@ -389,12 +391,19 @@ local function activeTeam(candidate)
 end
 
 local function aliveRoot(character)
-	if character and character:IsDescendantOf(Workspace) then
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		local root = character:FindFirstChild("HumanoidRootPart")
-		if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
-			return root, humanoid
-		end
+	if not character or not character:IsDescendantOf(Workspace) then
+		return nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if (humanoid and humanoid.Health <= 0) or (not humanoid and not generalMode) then
+		return nil
+	end
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		return root, humanoid
+	end
+	if generalMode then
+		return character.PrimaryPart or character:FindFirstChildWhichIsA("BasePart", true), humanoid
 	end
 	return nil
 end
@@ -1577,8 +1586,8 @@ end
 
 local function refreshEnemyTargets()
 	table.clear(enemyTargets)
-	local ownTeam = if flagMode then activeTeam(player) else player.Team
-	if not ownTeam or (prisonMode and (player.Neutral or not PRISON_ROLE_COLORS[ownTeam.Name])) then
+	local ownTeam = if flagMode then activeTeam(player) elseif prisonMode then player.Team else nil
+	if not generalMode and (not ownTeam or (prisonMode and (player.Neutral or not PRISON_ROLE_COLORS[ownTeam.Name]))) then
 		hideEnemies()
 		return
 	end
@@ -1598,12 +1607,12 @@ local function refreshEnemyTargets()
 				roleColor = PRISON_ROLE_COLORS[team.Name]
 			end
 			opponent = roleColor ~= nil
-		else
+		elseif flagMode then
 			local team = activeTeam(other)
 			opponent = team ~= nil and team ~= ownTeam
 		end
 		local root, humanoid
-		if opponent or (carrier and carrier.character == character) then
+		if generalMode or opponent or (carrier and carrier.character == character) then
 			root, humanoid = aliveRoot(character)
 		end
 		local visual = enemyVisuals[other]
@@ -1616,10 +1625,10 @@ local function refreshEnemyTargets()
 		end
 
 		if not visual then
-			visual = makeEnemyVisual()
+			visual = if generalMode then {} else makeEnemyVisual()
 			enemyVisuals[other] = visual
 		end
-		local head = character:FindFirstChild("Head")
+		local head = visual.marker and character:FindFirstChild("Head")
 		visual.player = other
 		visual.opponent = opponent
 		if roleColor and visual.roleColor ~= roleColor then
@@ -1655,17 +1664,20 @@ local function updateEnemies(camera, localPosition, dt)
 		if carrier and carrier.character ~= visual.character then
 			carrier = nil
 		end
-		if visual.humanoid.Health <= 0 or root.Parent ~= visual.character
-			or not visual.character:IsDescendantOf(Workspace) or (not visual.opponent and not carrier) then
+		if (visual.humanoid and visual.humanoid.Health <= 0)
+			or not root:IsDescendantOf(visual.character) or not visual.character:IsDescendantOf(Workspace)
+			or (not generalMode and not visual.opponent and not carrier) then
 			hideEnemy(visual)
 			continue
 		end
 
-		local color = carrier and (visual.opponent and carrierOrange or carrierBlue)
+		local color = if generalMode then playerCyan else carrier and (visual.opponent and carrierOrange or carrierBlue)
 			or visual.roleColor or amber
 		if visual.markerColor ~= color then
 			visual.markerColor = color
-			visual.standard.Visible = carrier == nil
+			if visual.standard then
+				visual.standard.Visible = carrier == nil
+			end
 			if visual.highlight then
 				visual.highlight.FillColor = color
 				visual.highlight.OutlineColor = color
@@ -1687,6 +1699,9 @@ local function updateEnemies(camera, localPosition, dt)
 			local outline = urgent and (.87 + .08 * math.sin(os.clock() * 5.2)) or (carrier and .92 or .73)
 			visual.highlight.FillTransparency = 1 - (carrier and .21 or .14) * strength
 			visual.highlight.OutlineTransparency = 1 - outline * strength
+		end
+		if not visual.marker then
+			continue
 		end
 
 		local head = visual.head
@@ -1717,12 +1732,12 @@ local function stopScan()
 	if flagStatus then
 		flagStatus.close()
 	end
-	if hasPlayerScan then
-		table.clear(enemyTargets)
-		enemyRefresh = 0
+	table.clear(enemyTargets)
+	enemyRefresh = 0
+	if markerLayer then
 		markerLayer.Visible = false
-		hideEnemies()
 	end
+	hideEnemies()
 end
 
 local function render(dt)
@@ -1736,9 +1751,7 @@ local function render(dt)
 		if flagStatus then
 			flagStatus.close()
 		end
-		if hasPlayerScan then
-			hideEnemies()
-		end
+		hideEnemies()
 		gui.Enabled = false
 		grade.Enabled = false
 		return
@@ -1797,12 +1810,12 @@ local function render(dt)
 	if scanEnabled then
 		projectileScan.update(camera)
 		floorSweep.update(camera, root.Position, dt)
-	end
-	if scanEnabled and hasPlayerScan then
 		if flagStatus then
 			flagStatus.update(camera, dt)
 		end
-		markerLayer.Visible = true
+		if markerLayer then
+			markerLayer.Visible = true
+		end
 		updateEnemies(camera, root.Position, dt)
 	end
 end
@@ -1813,12 +1826,15 @@ local function refreshRoster()
 end
 
 local function watchPlayer(candidate)
-	playerConnections[candidate] = {
-		candidate:GetPropertyChangedSignal("Team"):Connect(refreshRoster),
-		candidate:GetPropertyChangedSignal("Neutral"):Connect(refreshRoster),
+	local candidateConnections = {
 		candidate.CharacterAdded:Connect(refreshRoster),
 		candidate.CharacterRemoving:Connect(refreshRoster),
 	}
+	if not generalMode then
+		table.insert(candidateConnections, candidate:GetPropertyChangedSignal("Team"):Connect(refreshRoster))
+		table.insert(candidateConnections, candidate:GetPropertyChangedSignal("Neutral"):Connect(refreshRoster))
+	end
+	playerConnections[candidate] = candidateConnections
 	refreshRoster()
 end
 
@@ -1857,22 +1873,22 @@ local connections = {
 	player.CharacterRemoving:Connect(stopScan),
 }
 
-if hasPlayerScan then
-	for _, candidate in Players:GetPlayers() do
-		watchPlayer(candidate)
-	end
-	table.insert(connections, Players.PlayerAdded:Connect(watchPlayer))
-	table.insert(connections, Players.PlayerRemoving:Connect(function(other)
-		unwatchPlayer(other)
-		refreshRoster()
-		local visual = enemyVisuals[other]
-		if visual then
-			hideEnemy(visual)
-			visual.marker:Destroy()
-			enemyVisuals[other] = nil
-		end
-	end))
+for _, candidate in Players:GetPlayers() do
+	watchPlayer(candidate)
 end
+table.insert(connections, Players.PlayerAdded:Connect(watchPlayer))
+table.insert(connections, Players.PlayerRemoving:Connect(function(other)
+	unwatchPlayer(other)
+	refreshRoster()
+	local visual = enemyVisuals[other]
+	if visual then
+		hideEnemy(visual)
+		if visual.marker then
+			visual.marker:Destroy()
+		end
+		enemyVisuals[other] = nil
+	end
+end))
 
 local stopped = false
 local scriptConnection
@@ -1894,13 +1910,11 @@ local function cleanup()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
-	if hasPlayerScan then
-		for candidate in playerConnections do
-			unwatchPlayer(candidate)
-		end
-		hideEnemies()
-		highlightFolder:Destroy()
+	for candidate in playerConnections do
+		unwatchPlayer(candidate)
 	end
+	hideEnemies()
+	highlightFolder:Destroy()
 	if flagStatus then
 		flagStatus.destroy()
 	end
