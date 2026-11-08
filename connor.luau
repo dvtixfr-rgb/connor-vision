@@ -37,7 +37,6 @@ if type(previousCleanup) == "function" then
 end
 
 local blue = Color3.fromRGB(107, 163, 218)
-local playerCyan = Color3.fromRGB(112, 205, 248)
 local amber = Color3.fromRGB(238, 185, 43)
 local warningAmber = Color3.fromRGB(255, 214, 117)
 local carrierOrange = Color3.fromRGB(255, 109, 67)
@@ -197,11 +196,8 @@ local canvasScale = create("UIScale", canvas, { Scale = 1 })
 local gridLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 3)
 gridLayer.Size = UDim2.fromScale(1, 1)
 local highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
-local markerLayer
-if not generalMode then
-	markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
-	markerLayer.Size = UDim2.fromScale(1, 1)
-end
+local markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
+markerLayer.Size = UDim2.fromScale(1, 1)
 local gridBands = {}
 local gridNodes = {}
 local enemyVisuals = {}
@@ -366,9 +362,7 @@ local function watchProtection(visual, character, root)
 end
 
 local function hideEnemy(visual)
-	if visual.marker then
-		visual.marker.Visible = false
-	end
+	visual.marker.Visible = false
 	stopWatchingProtection(visual)
 	if visual.highlight then
 		visual.highlight:Destroy()
@@ -1625,10 +1619,10 @@ local function refreshEnemyTargets()
 		end
 
 		if not visual then
-			visual = if generalMode then {} else makeEnemyVisual()
+			visual = makeEnemyVisual()
 			enemyVisuals[other] = visual
 		end
-		local head = visual.marker and character:FindFirstChild("Head")
+		local head = character:FindFirstChild("Head")
 		visual.player = other
 		visual.opponent = opponent
 		if roleColor and visual.roleColor ~= roleColor then
@@ -1641,7 +1635,7 @@ local function refreshEnemyTargets()
 		visual.humanoid = humanoid
 		visual.head = head and head:IsA("BasePart") and head or nil
 		visual.character = character
-		if flagMode then
+		if visual.warning then
 			watchProtection(visual, character, root)
 		end
 		if visual.highlight and visual.highlight.Adornee ~= character then
@@ -1671,13 +1665,11 @@ local function updateEnemies(camera, localPosition, dt)
 			continue
 		end
 
-		local color = if generalMode then playerCyan else carrier and (visual.opponent and carrierOrange or carrierBlue)
+		local color = carrier and (visual.opponent and carrierOrange or carrierBlue)
 			or visual.roleColor or amber
 		if visual.markerColor ~= color then
 			visual.markerColor = color
-			if visual.standard then
-				visual.standard.Visible = carrier == nil
-			end
+			visual.standard.Visible = carrier == nil
 			if visual.highlight then
 				visual.highlight.FillColor = color
 				visual.highlight.OutlineColor = color
@@ -1700,10 +1692,6 @@ local function updateEnemies(camera, localPosition, dt)
 			visual.highlight.FillTransparency = 1 - (carrier and .21 or .14) * strength
 			visual.highlight.OutlineTransparency = 1 - outline * strength
 		end
-		if not visual.marker then
-			continue
-		end
-
 		local head = visual.head
 		local markerPoint = root.Position + Vector3.new(0, 3, 0)
 		if head and head.Parent == visual.character then
@@ -1734,9 +1722,7 @@ local function stopScan()
 	end
 	table.clear(enemyTargets)
 	enemyRefresh = 0
-	if markerLayer then
-		markerLayer.Visible = false
-	end
+	markerLayer.Visible = false
 	hideEnemies()
 end
 
@@ -1813,9 +1799,7 @@ local function render(dt)
 		if flagStatus then
 			flagStatus.update(camera, dt)
 		end
-		if markerLayer then
-			markerLayer.Visible = true
-		end
+		markerLayer.Visible = true
 		updateEnemies(camera, root.Position, dt)
 	end
 end
@@ -1883,9 +1867,7 @@ table.insert(connections, Players.PlayerRemoving:Connect(function(other)
 	local visual = enemyVisuals[other]
 	if visual then
 		hideEnemy(visual)
-		if visual.marker then
-			visual.marker:Destroy()
-		end
+		visual.marker:Destroy()
 		enemyVisuals[other] = nil
 	end
 end))
