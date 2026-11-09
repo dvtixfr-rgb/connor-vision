@@ -12,6 +12,7 @@ local Workspace = game:GetService("Workspace")
 
 local flagMode = game.PlaceId == 2336379484
 local prisonMode = game.PlaceId == 155615604
+local baseplateMode = game.PlaceId == 130960021905304
 local generalMode = not flagMode and not prisonMode
 
 local FLAGS_BY_TEAM = {
@@ -630,7 +631,266 @@ local function makeRemoteScan()
 	}
 end
 
-local remoteScan = if game.PlaceId == 130960021905304 then makeRemoteScan() else nil
+local remoteScan = if baseplateMode then makeRemoteScan() else nil
+
+local function makeMissionBanner()
+	local overlay = create("ScreenGui", playerGui, {
+		Name = "ConnorMissionResult",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets,
+		DisplayOrder = 32,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		Enabled = false,
+	})
+	local card = create("CanvasGroup", overlay, {
+		AnchorPoint = Vector2.new(.5, .5),
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(444, 82),
+	})
+	local uiScale = create("UIScale", card, { Scale = 1 })
+	local reveal = rect(card, 0, 0, 0, 82, navy, 0, 1)
+	reveal.ClipsDescendants = true
+	local strip = rect(reveal, 0, 0, 444, 72, Color3.fromRGB(8, 15, 23), .78, 1)
+	fade(strip, 0, {
+		NumberSequenceKeypoint.new(0, .43),
+		NumberSequenceKeypoint.new(.13, .07),
+		NumberSequenceKeypoint.new(.82, .22),
+		NumberSequenceKeypoint.new(1, .98),
+	})
+	local lineColor = Color3.fromRGB(133, 170, 200)
+	local rules = {
+		rect(strip, 0, 0, 444, 1, lineColor, .32, 2),
+		rect(strip, 0, 67, 444, 1, lineColor, .23, 2),
+	}
+	for _, rule in rules do
+		fade(rule, 0, {
+			NumberSequenceKeypoint.new(0, .18),
+			NumberSequenceKeypoint.new(.77, .44),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+	end
+	local notch = rect(strip, 215, 69, 9, 1, lineColor, .35, 2)
+	notch.Rotation = 49
+	local title = create("TextLabel", strip, {
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(17, 9),
+		Size = UDim2.fromOffset(418, 42),
+		Text = "",
+		RichText = true,
+		FontFace = Font.new(FONT_FAMILY, Enum.FontWeight.Light),
+		TextSize = 33,
+		TextColor3 = Color3.fromRGB(238, 244, 248),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 3,
+	})
+	local name = create("TextLabel", strip, {
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(18, 49),
+		Size = UDim2.fromOffset(410, 15),
+		Text = "",
+		Font = Enum.Font.Code,
+		TextSize = 13,
+		TextColor3 = Color3.fromRGB(176, 203, 222),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 3,
+	})
+	local startedAt, width, anchorX
+	local lastViewport
+	local function show(success, username)
+		width = if success then 444 else 314
+		anchorX = if success then .57 else .32
+		card.Size = UDim2.fromOffset(width, 82)
+		strip.Size = UDim2.fromOffset(width, 72)
+		for _, rule in rules do
+			rule.Size = UDim2.fromOffset(width, 1)
+		end
+		notch.Position = UDim2.fromOffset(width * .48, 69)
+		title.Text = if success then "MISSION <b>SUCCESSFUL</b>" else "MISSION <b>FAILED</b>"
+		name.Text = if username then "@" .. username else ""
+		startedAt = os.clock()
+		reveal.Size = UDim2.fromOffset(0, 82)
+		card.GroupTransparency = 1
+		overlay.Enabled = true
+	end
+
+	local function update(camera)
+		if not startedAt or not camera then
+			return
+		end
+		local age = os.clock() - startedAt
+		if age >= 2.8 then
+			startedAt = nil
+			overlay.Enabled = false
+			return
+		end
+		local pixels = camera.ViewportSize
+		if lastViewport ~= pixels then
+			lastViewport = pixels
+			uiScale.Scale = math.max(.05, math.min(pixels.Y / 1080, pixels.X / 1280))
+		end
+		local open = math.clamp(age / .30, 0, 1)
+		local close = math.clamp((age - 2.13) / .67, 0, 1)
+		local revealed = 1 - (1 - open) ^ 3
+		reveal.Size = UDim2.fromOffset(math.ceil(width * revealed), 82)
+		card.Position = UDim2.new(anchorX, -10 * (1 - open) - 9 * close, .45, 0)
+		card.GroupTransparency = 1 - math.min(age / .17, 1) * (1 - close ^ 1.4)
+	end
+
+	return { show = show, update = update, destroy = function() overlay:Destroy() end }
+end
+
+local function makeBaseplateResults()
+	local banner = makeMissionBanner()
+	local closeRange = 11
+	local contactWindow = 3.4
+	local matchWindow = 1
+	local settleTime = .50
+	local pollInterval = .10
+	local tracked, deaths, credits, pending = {}, {}, {}, {}
+	local connections = {}
+
+	local function nearby(entry, now)
+		return entry.lastContact and now - entry.lastContact <= contactWindow
+	end
+
+	local function recordDeath(candidate, entry, now)
+		if entry.dead then
+			return
+		end
+		entry.dead = true
+		if candidate == player then
+			local contacts = {}
+			for other, track in tracked do
+				if other ~= player and nearby(track, now) then
+					contacts[other] = true
+				end
+			end
+			table.insert(pending, { at = now, success = false, contacts = contacts })
+		elseif nearby(entry, now) then
+			table.insert(deaths, { at = now, player = candidate, count = 1 })
+		end
+	end
+
+	local function untrack(candidate)
+		local entry = tracked[candidate]
+		if entry and entry.died then
+			entry.died:Disconnect()
+		end
+		tracked[candidate] = nil
+	end
+
+	local function observe(candidate, localRoot, now)
+		local entry = tracked[candidate]
+		if not entry then
+			entry = {}
+			tracked[candidate] = entry
+		end
+		local character = candidate.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid ~= entry.humanoid then
+			if entry.died then
+				entry.died:Disconnect()
+				entry.died = nil
+			end
+			entry.humanoid = humanoid
+			entry.lastContact = nil
+			entry.dead = not humanoid or humanoid.Health <= 0
+			if humanoid and not entry.dead then
+				entry.died = humanoid.Died:Connect(function()
+					if entry.humanoid == humanoid then
+						recordDeath(candidate, entry, os.clock())
+					end
+				end)
+			end
+		end
+		if humanoid and humanoid.Health <= 0 then
+			recordDeath(candidate, entry, now)
+		elseif localRoot and candidate ~= player then
+			local root = aliveRoot(character)
+			if root and (root.Position - localRoot.Position).Magnitude <= closeRange then
+				entry.lastContact = now
+			end
+		end
+
+		local stats = candidate:FindFirstChild("leaderstats")
+		local stat = stats and stats:FindFirstChild("Kills")
+		local count
+		if stat and (stat:IsA("IntValue") or stat:IsA("NumberValue")) then
+			count = stat.Value
+		elseif stat and stat:IsA("StringValue") then
+			count = tonumber((stat.Value:gsub(",", "")))
+		end
+		if stat == entry.stat and count and entry.count and count > entry.count then
+			local delta = count - entry.count
+			if candidate == player then
+				table.insert(pending, { at = now, success = true, count = delta })
+			else
+				table.insert(credits, { at = now, player = candidate, count = delta })
+			end
+		end
+		entry.stat, entry.count = stat, count
+	end
+
+	local function resolve(result)
+		local matches = 0
+		local matched
+		local candidates = if result.success then deaths else credits
+		for _, candidate in candidates do
+			if not candidate.used and math.abs(candidate.at - result.at) <= matchWindow
+				and (result.success or result.contacts[candidate.player]) then
+				candidate.used = true
+				matches += 1
+				matched = candidate
+			end
+		end
+		if matches == 1 and matched.count == 1 and (result.count or 1) == 1 then
+			return matched.player.Name
+		end
+		return nil
+	end
+
+	local function poll(now)
+		local localRoot = aliveRoot(player.Character)
+		for _, candidate in Players:GetPlayers() do
+			observe(candidate, localRoot, now)
+		end
+		while pending[1] and now - pending[1].at >= settleTime do
+			local result = table.remove(pending, 1)
+			banner.show(result.success, resolve(result))
+		end
+		for _, records in { deaths, credits } do
+			while records[1] and now - records[1].at > matchWindow + settleTime + pollInterval do
+				table.remove(records, 1)
+			end
+		end
+	end
+
+	poll(os.clock())
+	local nextPoll = 0
+	table.insert(connections, RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		if now >= nextPoll then
+			nextPoll = now + pollInterval
+			poll(now)
+		end
+	end))
+	table.insert(connections, Players.PlayerRemoving:Connect(untrack))
+	return {
+		update = banner.update,
+		destroy = function()
+			for _, connection in connections do
+				connection:Disconnect()
+			end
+			for candidate in tracked do
+				untrack(candidate)
+			end
+			banner.destroy()
+		end,
+	}
+end
+
+local baseplateResults = if baseplateMode then makeBaseplateResults() else nil
 
 -- Flag HUD and pickup tracking
 local function makeFlagStatus()
@@ -1967,6 +2227,9 @@ end
 
 local function render(dt)
 	local camera = Workspace.CurrentCamera
+	if baseplateResults then
+		baseplateResults.update(camera)
+	end
 	local character = player.Character
 	local root = aliveRoot(character)
 	local position = root and root.Position
@@ -2144,6 +2407,9 @@ local function cleanup()
 	RunService:UnbindFromRenderStep(RENDER_STEP)
 	if remoteScan then
 		remoteScan.destroy()
+	end
+	if baseplateResults then
+		baseplateResults.destroy()
 	end
 	projectileScan.destroy()
 	floorSweep.destroy()
