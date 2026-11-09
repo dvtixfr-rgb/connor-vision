@@ -634,6 +634,10 @@ end
 local remoteScan = if baseplateMode then makeRemoteScan() else nil
 
 local function makeMissionBanner()
+	local height = 60
+	local pale = Color3.fromRGB(230, 240, 248)
+	local cyan = Color3.fromRGB(113, 198, 248)
+	local lineColor = Color3.fromRGB(120, 171, 208)
 	local overlay = create("ScreenGui", playerGui, {
 		Name = "ConnorMissionResult",
 		ResetOnSpawn = false,
@@ -643,98 +647,139 @@ local function makeMissionBanner()
 		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		Enabled = false,
 	})
-	local card = create("CanvasGroup", overlay, {
-		AnchorPoint = Vector2.new(.5, .5),
+	local readout = create("CanvasGroup", overlay, {
+		AnchorPoint = Vector2.new(1, .5),
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(444, 82),
 	})
-	local uiScale = create("UIScale", card, { Scale = 1 })
-	local reveal = rect(card, 0, 0, 0, 82, navy, 0, 1)
+	local uiScale = create("UIScale", readout, { Scale = 1 })
+	local reveal = rect(readout, 0, 0, 0, height, navy, 0, 1)
 	reveal.ClipsDescendants = true
-	local strip = rect(reveal, 0, 0, 444, 72, Color3.fromRGB(8, 15, 23), .78, 1)
+	local art = rect(reveal, 0, 0, 388, height, navy, 0, 1)
+	local strip = rect(art, 0, 7, 0, 44, Color3.fromRGB(5, 13, 22), .51, 1)
+	strip.Size = UDim2.new(1, 0, 0, 44)
 	fade(strip, 0, {
-		NumberSequenceKeypoint.new(0, .43),
-		NumberSequenceKeypoint.new(.13, .07),
-		NumberSequenceKeypoint.new(.82, .22),
-		NumberSequenceKeypoint.new(1, .98),
+		NumberSequenceKeypoint.new(0, .78),
+		NumberSequenceKeypoint.new(.09, .14),
+		NumberSequenceKeypoint.new(.83, .27),
+		NumberSequenceKeypoint.new(1, 1),
 	})
-	local lineColor = Color3.fromRGB(133, 170, 200)
-	local rules = {
-		rect(strip, 0, 0, 444, 1, lineColor, .32, 2),
-		rect(strip, 0, 67, 444, 1, lineColor, .23, 2),
-	}
-	for _, rule in rules do
-		fade(rule, 0, {
-			NumberSequenceKeypoint.new(0, .18),
-			NumberSequenceKeypoint.new(.77, .44),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-	end
-	local notch = rect(strip, 215, 69, 9, 1, lineColor, .35, 2)
-	notch.Rotation = 49
-	local title = create("TextLabel", strip, {
+	local top = rect(art, 0, 6, 0, 1, lineColor, .30, 2)
+	top.Size = UDim2.new(1, 0, 0, 1)
+	fade(top, 0, {
+		NumberSequenceKeypoint.new(0, .50),
+		NumberSequenceKeypoint.new(.31, .04),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	local lower = rect(art, 2, 51, 0, 1, lineColor, .23, 2)
+	lower.Size = UDim2.new(.46, -2, 0, 1)
+	local notch = rect(art, 0, 53, 8, 1, lineColor, .39, 2)
+	notch.Position = UDim2.new(.46, -1, 0, 53)
+	notch.Rotation = 46
+	local tail = rect(art, 0, 56, 0, 1, lineColor, .18, 2)
+	tail.Position = UDim2.new(.46, 6, 0, 56)
+	tail.Size = UDim2.new(.39, 0, 0, 1)
+	fade(tail, 0, { NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) })
+
+	local title = create("TextLabel", art, {
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(17, 9),
-		Size = UDim2.fromOffset(418, 42),
+		Position = UDim2.fromOffset(9, 9),
+		Size = UDim2.new(1, -12, 0, 34),
 		Text = "",
 		RichText = true,
 		FontFace = Font.new(FONT_FAMILY, Enum.FontWeight.Light),
-		TextSize = 33,
-		TextColor3 = Color3.fromRGB(238, 244, 248),
+		TextSize = 30,
+		TextColor3 = pale,
+		TextStrokeColor3 = navy,
+		TextStrokeTransparency = .76,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 3,
 	})
-	local name = create("TextLabel", strip, {
+	local name = create("TextLabel", art, {
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(18, 49),
-		Size = UDim2.fromOffset(410, 15),
+		Position = UDim2.fromOffset(9, 41),
+		Size = UDim2.new(1, -12, 0, 11),
 		Text = "",
 		Font = Enum.Font.Code,
-		TextSize = 13,
-		TextColor3 = Color3.fromRGB(176, 203, 222),
+		TextSize = 11,
+		TextColor3 = Color3.fromRGB(163, 197, 219),
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 3,
 	})
-	local startedAt, width, anchorX
-	local lastViewport
+	local startedAt, width, successful, subject
+	local screenPoint, projectedPoint, onRight
 	local function show(success, username)
-		width = if success then 444 else 314
-		anchorX = if success then .57 else .32
-		card.Size = UDim2.fromOffset(width, 82)
-		strip.Size = UDim2.fromOffset(width, 72)
-		for _, rule in rules do
-			rule.Size = UDim2.fromOffset(width, 1)
-		end
-		notch.Position = UDim2.fromOffset(width * .48, 69)
-		title.Text = if success then "MISSION <b>SUCCESSFUL</b>" else "MISSION <b>FAILED</b>"
+		successful = success
+		subject = player.Character
+		width = if success then 388 else 277
+		readout.Size = UDim2.fromOffset(width, height)
+		art.Size = UDim2.fromOffset(width, height)
+		local result = if success then "SUCCESSFUL" else "FAILED"
+		title.Text = 'MISSION <font weight="600">' .. result .. '</font>'
 		name.Text = if username then "@" .. username else ""
 		startedAt = os.clock()
-		reveal.Size = UDim2.fromOffset(0, 82)
-		card.GroupTransparency = 1
+		screenPoint, projectedPoint, onRight = nil, nil, false
+		reveal.Size = UDim2.fromOffset(0, height)
+		readout.GroupTransparency = 1
 		overlay.Enabled = true
 	end
 
-	local function update(camera)
-		if not startedAt or not camera then
+	local function update(camera, position, dt)
+		if not startedAt then
 			return
 		end
 		local age = os.clock() - startedAt
-		if age >= 2.8 then
+		local duration = if successful then 4.55 else 2.55
+		if age >= duration then
 			startedAt = nil
+			subject = nil
 			overlay.Enabled = false
 			return
 		end
-		local pixels = camera.ViewportSize
-		if lastViewport ~= pixels then
-			lastViewport = pixels
-			uiScale.Scale = math.max(.05, math.min(pixels.Y / 1080, pixels.X / 1280))
+		if not camera then
+			return
 		end
-		local open = math.clamp(age / .30, 0, 1)
-		local close = math.clamp((age - 2.13) / .67, 0, 1)
-		local revealed = 1 - (1 - open) ^ 3
-		reveal.Size = UDim2.fromOffset(math.ceil(width * revealed), 82)
-		card.Position = UDim2.new(anchorX, -10 * (1 - open) - 9 * close, .45, 0)
-		card.GroupTransparency = 1 - math.min(age / .17, 1) * (1 - close ^ 1.4)
+
+		local pixels = camera.ViewportSize
+		local scale = math.max(.05, math.min(pixels.Y / 1080, pixels.X / 1000))
+		local widthPx = width * scale
+		local inset = 14 * scale
+		if player.Character ~= subject then
+			position = nil
+		end
+		if not position and subject and subject:IsDescendantOf(Workspace) then
+			local root = subject:FindFirstChild("HumanoidRootPart")
+			if root and root:IsA("BasePart") then
+				position = root.Position
+			end
+		end
+		if position then
+			local shoulder, visible = camera:WorldToViewportPoint(position + Vector3.new(0, 2.4, 0))
+			if visible and shoulder.Z > 4 then
+				local gap = 48 * scale
+				local left = shoulder.X - gap
+				local margin = if onRight then 32 * scale else 0
+				onRight = left < widthPx + inset + margin
+				local x = if onRight then shoulder.X + gap + widthPx else left
+				projectedPoint = Vector2.new(x, shoulder.Y)
+			end
+		end
+		local point = projectedPoint or Vector2.new(pixels.X * .45, pixels.Y * .37)
+		local padY = height * scale / 2 + inset
+		local target = Vector2.new(
+			math.clamp(point.X, widthPx + inset, math.max(widthPx + inset, pixels.X - inset)),
+			math.clamp(point.Y, padY, math.max(padY, pixels.Y - padY))
+		)
+		screenPoint = if screenPoint then screenPoint:Lerp(target, 1 - math.exp(-dt * 16)) else target
+		uiScale.Scale = scale
+		readout.Position = UDim2.fromOffset(screenPoint.X, screenPoint.Y)
+
+		local open = math.clamp((age - .035) / .26, 0, 1)
+		local close = math.clamp((age - (duration - .70)) / .70, 0, 1)
+		reveal.Size = UDim2.fromOffset(math.ceil(width * open), height)
+		readout.GroupTransparency = 1 - math.min(age / .18, 1) * (1 - close)
+		local blueShift = if successful then math.clamp((age - .92) / .27, 0, 1) else 0
+		title.TextColor3 = pale:Lerp(cyan, blueShift)
+		name.TextTransparency = 1 - .68 * math.clamp((age - .20) / .30, 0, 1)
 	end
 
 	return { show = show, update = update, destroy = function() overlay:Destroy() end }
@@ -2227,9 +2272,6 @@ end
 
 local function render(dt)
 	local camera = Workspace.CurrentCamera
-	if baseplateResults then
-		baseplateResults.update(camera)
-	end
 	local character = player.Character
 	local root = aliveRoot(character)
 	local position = root and root.Position
@@ -2239,6 +2281,9 @@ local function render(dt)
 		if relocationEnded then
 			resetScanOrigin()
 		end
+	end
+	if baseplateResults then
+		baseplateResults.update(camera, position, dt)
 	end
 	if not camera or not root then
 		strength = 0
