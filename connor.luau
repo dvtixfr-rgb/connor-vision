@@ -37,7 +37,7 @@ if type(previousCleanup) == "function" then
 	previousCleanup()
 end
 
-local blue = Color3.fromRGB(107, 163, 218)
+local gridBlue = Color3.fromRGB(113, 159, 190)
 local amber = Color3.fromRGB(238, 185, 43)
 local warningAmber = Color3.fromRGB(255, 214, 117)
 local carrierOrange = Color3.fromRGB(255, 109, 67)
@@ -206,7 +206,7 @@ local enemyTargets = {}
 local enemyRefresh = 0
 
 local function makeGridLine(thickness)
-	local frame = rect(gridLayer, 0, 0, 1, 1, blue, 0, 3)
+	local frame = rect(gridLayer, 0, 0, 1, 1, gridBlue, 0, 3)
 	frame.AnchorPoint = Vector2.new(.5, .5)
 	frame.Visible = false
 	local gradient = create("UIGradient", frame, {})
@@ -226,23 +226,22 @@ local function makeBand(level, radius, phase, opacity, thickness)
 end
 
 for level = -1, 2 do
-	makeBand(level, 7, 0, .31, 1.2)
-	makeBand(level, 3, GRID_SPACING, .10, .95)
+	makeBand(level, 7, 0, .25, 1)
+	makeBand(level, 3, GRID_SPACING, .075, 1)
 end
 
 for x = -3, 3 do
 	for z = -3, 3 do
-		local dot = rect(gridLayer, 0, 0, 4, 4, blue, 0, 4)
+		local dot = rect(gridLayer, 0, 0, 2, 2, gridBlue, 0, 4)
 		dot.AnchorPoint = Vector2.new(.5, .5)
-		create("UICorner", dot, { CornerRadius = UDim.new(.5, 0) })
 		local number
 		if (x + z) % 3 == 0 then
 			number = create("TextLabel", dot, {
-				Position = UDim2.fromOffset(8, -13),
-				Size = UDim2.fromOffset(52, 15),
+				Position = UDim2.fromOffset(5, -10),
+				Size = UDim2.fromOffset(40, 12),
 				BackgroundTransparency = 1,
-				TextColor3 = blue,
-				TextSize = 12,
+				TextColor3 = gridBlue,
+				TextSize = 10,
 				TextXAlignment = Enum.TextXAlignment.Left,
 				FontFace = font,
 				ZIndex = 4,
@@ -250,64 +249,75 @@ for x = -3, 3 do
 		end
 		table.insert(gridNodes, {
 			x = x, z = z, dot = dot, number = number,
-			post = makeGridLine(1.05),
+			post = makeGridLine(1),
 		})
 	end
 end
 
-local function shieldEdge(parent, x1, y1, x2, y2)
-	local dx, dy = x2 - x1, y2 - y1
-	local edge = rect(parent, (x1 + x2) / 2, (y1 + y2) / 2, math.sqrt(dx * dx + dy * dy), 1.85,
-		warningAmber, .91, 7)
-	edge.AnchorPoint = Vector2.new(.5, .5)
-	edge.Rotation = math.deg(math.atan2(dy, dx))
+local function scanCorners(parent, radius, length, thickness, color, opacity, z)
+	for _, side in { -1, 1 } do
+		for _, vertical in { -1, 1 } do
+			local x = side * radius
+			local y = vertical * radius
+			rect(parent, if side < 0 then x else x - length, y, length + thickness, thickness, color, opacity, z)
+			rect(parent, x, if vertical < 0 then y else y - length, thickness, length, color, opacity, z)
+		end
+	end
 end
 
 local function makeEnemyVisual()
 	local marker = rect(markerLayer, 0, 0, 0, 0, amber, 0, 6)
 	local markerScale = create("UIScale", marker, { Scale = 1 })
-	local standard = rect(marker, 0, 0, 0, 0, navy, 0, 6)
-	-- Four panels leave the center open. The thin flanks and dot stay separate.
-	rect(standard, -12, -10, 9, 20, amber, .95, 6)
-	rect(standard, 3, -10, 9, 20, amber, .95, 6)
-	rect(standard, -3, -10, 6, 7, amber, .95, 6)
-	rect(standard, -3, 3, 6, 7, amber, .95, 6)
-	rect(standard, -16, -10, 2, 20, amber, .74, 6)
-	rect(standard, 14, -10, 2, 20, amber, .74, 6)
-	local dot = rect(standard, -1.5, 14, 3, 3, amber, .90, 6)
+	local standard = rect(marker, -17, -12, 34, 24, navy, .88, 6)
+	-- Detroit's clue locator: a split plate, two rails, and the point below it.
+	rect(standard, 3, 0, 28, 24, amber, .96, 7)
+	rect(standard, 0, 0, 1.55, 24, amber, .94, 7)
+	rect(standard, 32.45, 0, 1.55, 24, amber, .94, 7)
+	local seam = rect(standard, 16.5, 0, 1, 24, navy, .43, 8)
+	local aperture = rect(standard, 13.25, 8.25, 7.5, 7.5, navy, .91, 8)
+	local dot = rect(standard, 15.55, 30.5, 2.9, 2.9, amber, .93, 7)
 	dot.Rotation = 45
+	local colored = {}
+	for _, panel in standard:GetChildren() do
+		if panel ~= seam and panel ~= aperture then
+			table.insert(colored, panel)
+		end
+	end
 	marker.Visible = false
 	if prisonMode then
-		return { marker = marker, scale = markerScale, standard = standard }
+		return { marker = marker, scale = markerScale, standard = standard, colored = colored }
 	end
 
 	local warning = rect(marker, 23, -9, 0, 0, navy, 0, 7)
-	local badge = rect(warning, -3, -2, 22, 23, navy, .68, 7)
-	create("UICorner", badge, { CornerRadius = UDim.new(0, 3) })
-	shieldEdge(warning, 0, 1, 16, 1)
-	shieldEdge(warning, 0, 1, 0, 10)
-	shieldEdge(warning, 16, 1, 16, 10)
-	shieldEdge(warning, 0, 10, 8, 17)
-	shieldEdge(warning, 16, 10, 8, 17)
-	rect(warning, 7.25, 4, 1.5, 5, warningAmber, .96, 7)
-	rect(warning, 7.25, 11, 1.5, 1.5, warningAmber, .96, 7)
-	local warningText = create("TextLabel", warning, {
-		Position = UDim2.fromOffset(24, -2),
-		Size = UDim2.fromOffset(110, 22),
+	local badge = rect(warning, 0, 1, 20, 20, navy, .67, 7)
+	local icon = rect(badge, 10, 10, 0, 0, navy, 0, 8)
+	scanCorners(icon, 10, 4, 1, warningAmber, .83, 8)
+	rect(icon, -3.2, -5.8, 6.4, 1.25, warningAmber, .91, 8)
+	rect(icon, -3.2, -4.55, 1.25, 4.15, warningAmber, .91, 8)
+	rect(icon, 1.95, -4.55, 1.25, 4.15, warningAmber, .91, 8)
+	rect(icon, -4.6, -.7, 9.2, 6.4, warningAmber, .96, 8)
+	local warningPanel = rect(warning, 22, 1, 105, 20, navy, .71, 7)
+	fade(warningPanel, 0, {
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(.8, .18),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	rect(warningPanel, 0, 0, 89, 1, warningAmber, .54, 8)
+	create("TextLabel", warningPanel, {
+		Position = UDim2.fromOffset(6, 0),
+		Size = UDim2.fromOffset(97, 20),
 		BackgroundTransparency = 1,
 		Text = "PROTECTED",
 		TextColor3 = warningAmber,
-		TextStrokeColor3 = navy,
-		TextStrokeTransparency = .22,
-		TextSize = 14,
+		TextSize = 12,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		FontFace = font,
-		ZIndex = 7,
+		ZIndex = 8,
 	})
 	warning.Visible = false
 	return {
-		marker = marker, scale = markerScale, standard = standard,
-		warning = warning, warningText = warningText,
+		marker = marker, scale = markerScale, standard = standard, colored = colored,
+		warning = warning, warningPanel = warningPanel,
 	}
 end
 
@@ -634,10 +644,10 @@ end
 local remoteScan = if baseplateMode then makeRemoteScan() else nil
 
 local function makeMissionBanner()
-	local height = 78
-	local pale = Color3.fromRGB(230, 240, 248)
-	local cyan = Color3.fromRGB(113, 198, 248)
-	local lineColor = Color3.fromRGB(120, 171, 208)
+	local height = 64
+	local white = Color3.fromRGB(233, 239, 247)
+	local cyan = Color3.fromRGB(118, 201, 243)
+	local gray = Color3.fromRGB(148, 160, 176)
 	local overlay = create("ScreenGui", playerGui, {
 		Name = "ConnorMissionResult",
 		ResetOnSpawn = false,
@@ -647,7 +657,7 @@ local function makeMissionBanner()
 		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		Enabled = false,
 	})
-	local readout = create("CanvasGroup", overlay, {
+	local readout = create("Frame", overlay, {
 		AnchorPoint = Vector2.new(1, .5),
 		Position = UDim2.fromScale(.955, .42),
 		BackgroundTransparency = 1,
@@ -655,69 +665,61 @@ local function makeMissionBanner()
 	local uiScale = create("UIScale", readout, { Scale = 1 })
 	local reveal = rect(readout, 0, 0, 0, height, navy, 0, 1)
 	reveal.ClipsDescendants = true
-	local art = rect(reveal, 0, 0, 508, height, navy, 0, 1)
-	local strip = rect(art, 0, 8, 0, 59, Color3.fromRGB(5, 13, 22), .51, 1)
-	strip.Size = UDim2.new(1, 0, 0, 59)
+	local art = rect(reveal, 0, 0, 0, height, navy, 0, 1)
+	local strip = rect(art, 0, 4, 0, 42, Color3.fromRGB(5, 13, 22), 0, 1)
+	strip.Size = UDim2.new(1, 0, 0, 42)
 	fade(strip, 0, {
-		NumberSequenceKeypoint.new(0, .78),
-		NumberSequenceKeypoint.new(.09, .14),
-		NumberSequenceKeypoint.new(.83, .27),
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(.12, .13),
+		NumberSequenceKeypoint.new(.76, 0),
 		NumberSequenceKeypoint.new(1, 1),
 	})
-	local top = rect(art, 0, 7, 0, 1, lineColor, .30, 2)
-	top.Size = UDim2.new(1, 0, 0, 1)
-	fade(top, 0, {
-		NumberSequenceKeypoint.new(0, .50),
-		NumberSequenceKeypoint.new(.31, .04),
+	local flash = rect(art, 0, 29, 0, 2, cyan, 0, 3)
+	flash.Size = UDim2.new(1, 0, 0, 2)
+	fade(flash, 0, {
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(.34, .14),
+		NumberSequenceKeypoint.new(.71, .52),
 		NumberSequenceKeypoint.new(1, 1),
 	})
-	local lower = rect(art, 2, 67, 0, 1, lineColor, .23, 2)
-	lower.Size = UDim2.new(.46, -2, 0, 1)
-	local notch = rect(art, 0, 70, 9, 1, lineColor, .39, 2)
-	notch.Position = UDim2.new(.46, -1, 0, 70)
-	notch.Rotation = 46
-	local tail = rect(art, 0, 73, 0, 1, lineColor, .18, 2)
-	tail.Position = UDim2.new(.46, 7, 0, 73)
-	tail.Size = UDim2.new(.39, 0, 0, 1)
-	fade(tail, 0, { NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) })
 
 	local title = create("TextLabel", art, {
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(12, 11),
-		Size = UDim2.new(1, -16, 0, 43),
+		Position = UDim2.fromOffset(7, 0),
+		Size = UDim2.new(1, -14, 0, 48),
 		Text = "",
 		RichText = true,
 		FontFace = Font.new(FONT_FAMILY, Enum.FontWeight.Light),
-		TextSize = 39,
-		TextColor3 = pale,
+		TextSize = 38,
+		TextColor3 = white,
 		TextStrokeColor3 = navy,
-		TextStrokeTransparency = .76,
+		TextStrokeTransparency = 1,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 3,
+		ZIndex = 2,
 	})
-	local name = create("TextLabel", art, {
+	local killer = create("TextLabel", art, {
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(12, 53),
-		Size = UDim2.new(1, -16, 0, 13),
+		Position = UDim2.fromOffset(8, 45),
+		Size = UDim2.new(1, -16, 0, 16),
 		Text = "",
-		Font = Enum.Font.Code,
+		FontFace = font,
 		TextSize = 13,
-		TextColor3 = Color3.fromRGB(163, 197, 219),
+		TextColor3 = gray,
 		TextXAlignment = Enum.TextXAlignment.Left,
-		ZIndex = 3,
+		ZIndex = 2,
 	})
 	local startedAt, width, successful, lastSize
-	local function show(success, username)
+	local function show(success, killerName)
 		successful = success
-		width = if success then 508 else 365
+		width = if success then 497 else 355
 		readout.Size = UDim2.fromOffset(width, height)
 		art.Size = UDim2.fromOffset(width, height)
 		local result = if success then "SUCCESSFUL" else "FAILED"
 		title.Text = 'MISSION <font weight="600">' .. result .. '</font>'
-		name.Text = if username then "@" .. username else ""
+		killer.Visible = not success and killerName ~= nil
+		killer.Text = if killer.Visible then "@" .. killerName else ""
 		startedAt = os.clock()
 		reveal.Size = UDim2.fromOffset(0, height)
-		readout.GroupTransparency = 1
 		overlay.Enabled = true
 	end
 
@@ -738,13 +740,18 @@ local function makeMissionBanner()
 			uiScale.Scale = math.max(.05, math.min(pixels.Y / 1080, pixels.X / 860))
 		end
 
-		local open = math.clamp((age - .035) / .26, 0, 1)
-		local close = math.clamp((age - (duration - .70)) / .70, 0, 1)
-		reveal.Size = UDim2.fromOffset(math.ceil(width * open), height)
-		readout.GroupTransparency = 1 - math.min(age / .18, 1) * (1 - close)
-		local blueShift = if successful then math.clamp((age - .92) / .27, 0, 1) else 0
-		title.TextColor3 = pale:Lerp(cyan, blueShift)
-		name.TextTransparency = 1 - .68 * math.clamp((age - .20) / .30, 0, 1)
+		local open = math.clamp(age / .26, 0, 1)
+		local close = math.clamp((age - (duration - .55)) / .55, 0, 1)
+		local alpha = math.min(age / .14, 1) * (1 - close)
+		reveal.Size = UDim2.fromOffset(math.ceil(width * (1 - (1 - open)^2)), height)
+		local blueShift = math.clamp((age - .87) / .18, 0, 1)
+		local pulse = math.max(0, 1 - math.abs(age - .94) / .09)
+		strip.BackgroundTransparency = 1 - .24 * alpha
+		title.TextColor3 = if successful then white:Lerp(cyan, blueShift) else white:Lerp(gray, close)
+		title.TextTransparency = 1 - alpha
+		title.TextStrokeTransparency = 1 - .21 * alpha
+		flash.BackgroundTransparency = if successful then 1 - .46 * alpha * pulse else 1
+		killer.TextTransparency = 1 - .7 * alpha * math.clamp((age - .20) / .30, 0, 1)
 	end
 
 	return { show = show, update = update, destroy = function() overlay:Destroy() end }
@@ -757,29 +764,25 @@ local function makeBaseplateResults()
 	local matchWindow = 1
 	local settleTime = .50
 	local pollInterval = .10
-	local tracked, deaths, credits, pending = {}, {}, {}, {}
+	local tracked, credits, pending = {}, {}, {}
 	local connections = {}
 
 	local function nearby(entry, now)
 		return entry.lastContact and now - entry.lastContact <= contactWindow
 	end
 
-	local function recordDeath(candidate, entry, now)
+	local function recordDeath(entry, now)
 		if entry.dead then
 			return
 		end
 		entry.dead = true
-		if candidate == player then
-			local contacts = {}
-			for other, track in tracked do
-				if other ~= player and nearby(track, now) then
-					contacts[other] = true
-				end
+		local contacts = {}
+		for other, track in tracked do
+			if other ~= player and nearby(track, now) then
+				contacts[other] = true
 			end
-			table.insert(pending, { at = now, success = false, contacts = contacts })
-		elseif nearby(entry, now) then
-			table.insert(deaths, { at = now, player = candidate, count = 1 })
 		end
+		table.insert(pending, { at = now, success = false, contacts = contacts })
 	end
 
 	local function untrack(candidate)
@@ -806,16 +809,16 @@ local function makeBaseplateResults()
 			entry.humanoid = humanoid
 			entry.lastContact = nil
 			entry.dead = not humanoid or humanoid.Health <= 0
-			if humanoid and not entry.dead then
+			if candidate == player and humanoid and not entry.dead then
 				entry.died = humanoid.Died:Connect(function()
 					if entry.humanoid == humanoid then
-						recordDeath(candidate, entry, os.clock())
+						recordDeath(entry, os.clock())
 					end
 				end)
 			end
 		end
-		if humanoid and humanoid.Health <= 0 then
-			recordDeath(candidate, entry, now)
+		if candidate == player and humanoid and humanoid.Health <= 0 then
+			recordDeath(entry, now)
 		elseif localRoot and candidate ~= player then
 			local root = aliveRoot(character)
 			if root and (root.Position - localRoot.Position).Magnitude <= closeRange then
@@ -834,7 +837,7 @@ local function makeBaseplateResults()
 		if stat == entry.stat and count and entry.count and count > entry.count then
 			local delta = count - entry.count
 			if candidate == player then
-				table.insert(pending, { at = now, success = true, count = delta })
+				table.insert(pending, { at = now, success = true })
 			else
 				table.insert(credits, { at = now, player = candidate, count = delta })
 			end
@@ -842,19 +845,18 @@ local function makeBaseplateResults()
 		entry.stat, entry.count = stat, count
 	end
 
-	local function resolve(result)
+	local function resolveKiller(result)
 		local matches = 0
 		local matched
-		local candidates = if result.success then deaths else credits
-		for _, candidate in candidates do
+		for _, candidate in credits do
 			if not candidate.used and math.abs(candidate.at - result.at) <= matchWindow
-				and (result.success or result.contacts[candidate.player]) then
+				and result.contacts[candidate.player] then
 				candidate.used = true
 				matches += 1
 				matched = candidate
 			end
 		end
-		if matches == 1 and matched.count == 1 and (result.count or 1) == 1 then
+		if matches == 1 and matched.count == 1 then
 			return matched.player.Name
 		end
 		return nil
@@ -867,12 +869,11 @@ local function makeBaseplateResults()
 		end
 		while pending[1] and now - pending[1].at >= settleTime do
 			local result = table.remove(pending, 1)
-			banner.show(result.success, resolve(result))
+			local killer = if result.success then nil else resolveKiller(result)
+			banner.show(result.success, killer)
 		end
-		for _, records in { deaths, credits } do
-			while records[1] and now - records[1].at > matchWindow + settleTime + pollInterval do
-				table.remove(records, 1)
-			end
+		while credits[1] and now - credits[1].at > matchWindow + settleTime + pollInterval do
+			table.remove(credits, 1)
 		end
 	end
 
@@ -917,15 +918,18 @@ local function makeFlagStatus()
 		byColorNumber[spec.brick.Number] = spec
 		byColorName[spec.brick.Name:lower()] = spec
 	end
-	local pale = Color3.fromRGB(241, 245, 249)
-	local muted = Color3.fromRGB(168, 187, 204)
-	local alert = Color3.fromRGB(255, 141, 97)
-	local stateColors = { ["AT BASE"] = pale, TAKEN = alert, UNKNOWN = muted }
+	local paper = Color3.fromRGB(251, 252, 252)
+	local ink = Color3.fromRGB(11, 17, 24)
+	local white = Color3.fromRGB(238, 244, 250)
+	local quiet = Color3.fromRGB(164, 178, 191)
+	local risk = Color3.fromRGB(247, 184, 72)
+	local confirmed = Color3.fromRGB(63, 172, 235)
 	local light = Font.new(FONT_FAMILY, Enum.FontWeight.Light)
-	local bold = Font.new(FONT_FAMILY, Enum.FontWeight.SemiBold)
-	local headerWidth, headerHeight = 246, 50
-	local readoutWidth, readoutHeight = 218, 36
-	local rowInset, rowGap = 17, 6
+	local semibold = Font.new(FONT_FAMILY, Enum.FontWeight.SemiBold)
+	local headerWidth, headerHeight = 326, 72
+	local rowWidth, rowHeight = 294, 68
+	local rowInset, rowGap = 24, 5
+	local trim = 22
 
 	local statusGui = create("ScreenGui", playerGui, {
 		Name = "ConnorFlagStatus",
@@ -936,7 +940,7 @@ local function makeFlagStatus()
 		ZIndexBehavior = Enum.ZIndexBehavior.Global,
 		Enabled = false,
 	})
-	local overlay = rect(statusGui, 0, 0, headerWidth, headerHeight + (readoutHeight + rowGap) * 2, navy, 0, 1)
+	local overlay = rect(statusGui, 0, 0, headerWidth + 2 * trim, headerHeight + 2 * (rowHeight + rowGap) + 8, navy, 0, 1)
 	overlay.AnchorPoint = Vector2.new(1, 0)
 	overlay.Position = UDim2.new(1, -40, .55, 0)
 	local overlayScale = create("UIScale", overlay, { Scale = 1 })
@@ -949,8 +953,6 @@ local function makeFlagStatus()
 			BackgroundTransparency = 1,
 			Text = "",
 			TextColor3 = color,
-			TextStrokeColor3 = navy,
-			TextStrokeTransparency = .93,
 			TextSize = size,
 			FontFace = face,
 			TextXAlignment = Enum.TextXAlignment.Left,
@@ -958,58 +960,55 @@ local function makeFlagStatus()
 		})
 	end
 
-	local function brackets(parent, x, y, width, height, opacity)
-		for _, right in { false, true } do
-			local edgeX = right and x + width - 1 or x
-			local startX = right and edgeX - 6 or edgeX
-			for _, bottom in { false, true } do
-				local edgeY = bottom and y + height - 1 or y
-				local startY = bottom and edgeY - 7 or edgeY
-				rect(parent, startX, edgeY, 7, 1, pale, opacity, 4)
-				rect(parent, edgeX, startY, 1, 8, pale, opacity, 4)
-			end
+	local function rails(parent, x, y, width, height, opacity)
+		local right, bottom = x + width - 1, y + height - 1
+		rect(parent, x, y, 1, height, white, opacity * .63, 3)
+		rect(parent, right, y, 1, height, white, opacity * .63, 3)
+		for _, edgeY in { y, bottom } do
+			rect(parent, x, edgeY, 8, 1, white, opacity, 4)
+			rect(parent, right - 7, edgeY, 8, 1, white, opacity, 4)
 		end
 	end
 
-	local function revealPlate(x, y, width, height, paddingX, paddingY, color, opacity)
-		local fullWidth, fullHeight = width + paddingX * 2, height + paddingY * 2
-		local mask = rect(overlay, x - paddingX, y - paddingY, 0, fullHeight, navy, 0, 2)
+	local function revealPlate(x, y, width, height, paddingX, color, opacity)
+		local fullWidth, fullHeight = width + 2 * paddingX, height + 6
+		local mask = rect(overlay, x - paddingX, y - 3, 0, fullHeight, navy, 0, 2)
 		mask.ClipsDescendants = true
 		mask.Visible = false
-		local frame = rect(mask, paddingX, paddingY, width, height, color, opacity, 2)
-		local edge = rect(mask, 0, paddingY + 2, 2, height - 4, pale, .7, 5)
+		local frame = rect(mask, paddingX, 3, width, height, color, opacity, 2)
+		local edge = rect(mask, 0, 3, 1, height, white, .62, 5)
+		edge.Position = UDim2.new(1, -1, 0, 3)
 		return { mask = mask, frame = frame, edge = edge, width = fullWidth, height = fullHeight }
 	end
 
-	-- Connor's Find Deviant stack uses a solid objective plate above indented subobjectives.
-	local headerPlate = revealPlate(0, 0, headerWidth, headerHeight, 16, 2, navy, 0)
+	-- Find Deviant objective: white strip, paired side cuts and offset dark subobjectives.
+	local headerPlate = revealPlate(trim, 4, headerWidth, headerHeight, trim, ink, 0)
 	local header = headerPlate.frame
-	rect(header, 8, 4, headerWidth - 16, headerHeight - 8, pale, .98, 2)
-	rect(header, -14, 4, 27, 1, pale, .34, 2)
-	rect(header, headerWidth - 9, headerHeight - 5, 23, 1, pale, .34, 2)
-	for _, x in { 11, 15, 19, headerWidth - 20, headerWidth - 16, headerWidth - 12 } do
-		rect(header, x, 4, 1.25, headerHeight - 8, navy, .96, 4)
+	local headerBody = rect(header, 8, 3, headerWidth - 16, headerHeight - 6, paper, .99, 2)
+	rect(header, -trim, 3, trim + 10, 1, white, .34, 3)
+	rect(header, headerWidth - 9, 3, trim + 9, 1, white, .31, 3)
+	for _, x in { 10, 14, 18, headerWidth - 24, headerWidth - 13 } do
+		rect(header, x, 3, 1.4, headerHeight - 6, ink, .96, 4)
 	end
-	rect(header, 4, 5, 1, headerHeight - 10, pale, .74, 4)
-	rect(header, headerWidth - 5, 5, 1, headerHeight - 10, pale, .74, 4)
-	rect(header, 111, 4, 31, 1.7, navy, .89, 4)
-	rect(header, 58, headerHeight - 6, 108, 1.9, navy, .89, 4)
-	brackets(header, 0, 0, headerWidth, headerHeight, .96)
-	local title = label(header, 30, 8, headerWidth - 60, headerHeight - 16, navy, 18, bold)
+	rect(headerBody, 117, 0, 36, 2, ink, .93, 4)
+	rect(headerBody, 62, headerHeight - 9, 132, 3, ink, .93, 4)
+	rails(header, 0, 0, headerWidth, headerHeight, .95)
+	local title = label(header, 37, 0, headerWidth - 58, headerHeight, ink, 20, semibold)
 	title.Text = "FLAGS"
-	title.TextStrokeTransparency = 1
 
-	local rail = rect(overlay, rowInset - 4, headerHeight, 1, 0, pale, .32, 2)
 	local rows = {}
 	for index = 1, 2 do
-		local y = headerHeight + rowGap + (index - 1) * (readoutHeight + rowGap)
-		local plate = revealPlate(rowInset, y, readoutWidth, readoutHeight, 5, 3, navy, .84)
+		local y = 4 + headerHeight + rowGap + (index - 1) * (rowHeight + rowGap)
+		local plate = revealPlate(trim + rowInset, y, rowWidth, rowHeight, 3, ink, 0)
 		local row = plate.frame
-		fade(row, 0, { NumberSequenceKeypoint.new(0, .03), NumberSequenceKeypoint.new(1, .26) })
-		brackets(row, -4, -2, readoutWidth + 8, readoutHeight + 4, .67)
-		local role = label(row, 14, 0, 88, readoutHeight, pale, 15, light)
-		local state = label(row, 102, 0, readoutWidth - 116, readoutHeight, pale, 15, bold)
-		state.TextXAlignment = Enum.TextXAlignment.Right
+		rect(row, 2, 1, rowWidth - 4, rowHeight - 2, ink, .67, 2)
+		rect(row, 1, 0, rowWidth - 2, 1, white, .24, 3)
+		rect(row, 1, rowHeight - 1, rowWidth - 2, 1, white, .17, 3)
+		rails(row, 0, 0, rowWidth, rowHeight, .57)
+		rect(row, 44, 0, 1, rowHeight, white, .09, 3)
+		local role = label(row, 59, 10, rowWidth - 71, 22, white, 18, light)
+		local state = label(row, 59, 32, rowWidth - 71, 24, white, 20, semibold)
+		plate.statusRail = rect(row, 1, 1, 3, rowHeight - 2, white, 0, 3)
 
 		row.Visible = false
 		plate.role = role
@@ -1019,7 +1018,7 @@ local function makeFlagStatus()
 	local wanted = false
 	local revealProgress = 0
 	local drawnProgress
-	local railLength = 0
+	local visibleRows = 0
 
 	local function reveal(plate, fraction)
 		local visible = fraction > 0 and plate.frame.Visible
@@ -1030,8 +1029,7 @@ local function makeFlagStatus()
 		local eased = 1 - (1 - fraction)^3
 		local width = math.ceil(plate.width * eased)
 		plate.mask.Size = UDim2.fromOffset(width, plate.height)
-		plate.edge.Visible = fraction < 1
-		plate.edge.Position = UDim2.new(1, -2, 0, 4)
+		plate.edge.Visible = fraction < .96
 	end
 
 	local function drawReveal()
@@ -1039,12 +1037,11 @@ local function makeFlagStatus()
 			return
 		end
 		drawnProgress = revealProgress
-		reveal(headerPlate, math.clamp(revealProgress / .53, 0, 1))
+		reveal(headerPlate, math.clamp(revealProgress / .39, 0, 1))
 		for index, row in rows do
-			local delay = .21 + .22 * (index - 1)
+			local delay = .27 + .23 * (index - 1)
 			reveal(row, math.clamp((revealProgress - delay) / (1 - delay), 0, 1))
 		end
-		rail.Size = UDim2.fromOffset(1, railLength * math.clamp((revealProgress - .20) / .60, 0, 1))
 	end
 
 	local parts = {}
@@ -1334,33 +1331,30 @@ local function makeFlagStatus()
 			return
 		end
 		local count = 0
-		local function show(spec, role, state)
-			if not spec then
-				return
-			end
+		local function show(role, state, takenColor)
 			count += 1
 			local row = rows[count]
 			row.frame.Visible = true
 			row.role.Text = role
 			row.state.Text = state
-			row.state.TextColor3 = stateColors[state]
+			row.state.TextColor3 = if state == "TAKEN" then takenColor elseif state == "UNKNOWN" then quiet else white
+			row.statusRail.BackgroundColor3 = takenColor
+			row.statusRail.BackgroundTransparency = if state == "TAKEN" then .16 else 1
 		end
-		show(ownFlag, "YOURS", ownState)
-		show(enemyFlag, "ENEMY", enemyState)
+		if ownFlag then
+			show("YOUR FLAG", ownState, risk)
+		end
+		if enemyFlag then
+			show("ENEMY FLAG", enemyState, confirmed)
+		end
 		if count == 0 then
-			local row = rows[1]
-			row.frame.Visible = true
-			row.role.Text = ""
-			row.state.Text = "UNKNOWN"
-			row.state.TextColor3 = muted
-			count = 1
+			show("", "UNKNOWN", quiet)
 		end
 		for index = count + 1, #rows do
 			rows[index].frame.Visible = false
 		end
-		local length = (readoutHeight + rowGap) * count
-		if railLength ~= length then
-			railLength = length
+		if visibleRows ~= count then
+			visibleRows = count
 			drawnProgress = nil
 		end
 	end
@@ -1567,20 +1561,17 @@ local function makeProjectileScan()
 
 	local function makeMarker(group)
 		local marker = rect(layer, 0, 0, 0, 0, navy, 0, 5)
-		local size = if group.explosive then 5 else 4.5
-		local shadow = rect(marker, -size/2 - 1, -size/2 - 1, size + 2, size + 2, navy, .8, 5)
+		local size = if group.explosive then 4.5 else 3.5
+		local shadow = rect(marker, -size / 2 - 1, -size / 2 - 1, size + 2, size + 2, navy, .82, 5)
 		shadow.Rotation = 45
-		local diamond = rect(marker, -size/2, -size/2, size, size, group.color, 1, 5)
+		local diamond = rect(marker, -size / 2, -size / 2, size, size, group.color, .98, 5)
 		diamond.Rotation = 45
 		if group.explosive then
-			for _, x in { -13, 13 } do
-				for _, y in { -11, 11 } do
-					local left = if x < 0 then x else x - 5
-					local top = if y < 0 then y else y - 5
-					rect(marker, left, y, 6, 1.4, group.color, .93, 5)
-					rect(marker, x, top, 1.4, 6, group.color, .93, 5)
-				end
-			end
+			scanCorners(marker, 13, 5.5, 1.2, group.color, .92, 5)
+			scanCorners(marker, 9.5, 3, 1, group.color, .30, 5)
+		else
+			rect(marker, -6, -.5, 2, 1, group.color, .52, 5)
+			rect(marker, 4, -.5, 2, 1, group.color, .52, 5)
 		end
 		return marker
 	end
@@ -1719,8 +1710,8 @@ local function makeFloorSweep()
 		leadingEdge += size
 	end
 	local colors = {
-		Color3.fromRGB(221, 242, 255), Color3.fromRGB(147, 201, 246),
-		Color3.fromRGB(196, 227, 251), Color3.fromRGB(239, 248, 255),
+		Color3.fromRGB(231, 246, 255), Color3.fromRGB(172, 211, 242),
+		Color3.fromRGB(208, 233, 252), Color3.fromRGB(245, 251, 255),
 	}
 	local available, active = {}, {}
 	local folder
@@ -1753,7 +1744,7 @@ local function makeFloorSweep()
 
 	local function paintRow(row, index)
 		local center = origin + forward * row.depth + rise
-		local width = row.size - .12
+		local width = row.size - .055
 		for column = -row.columns, row.columns do
 			local hit = Workspace:Raycast(center + side * (column * row.size), down, ray)
 			if not hit or hit.Normal.Y < .65 or math.abs(hit.Position.Y - floorHeight) > 12 then
@@ -1776,7 +1767,7 @@ local function makeFloorSweep()
 			part.Size = Vector3.new(width, .028, width)
 			part.CFrame = CFrame.fromMatrix(hit.Position + normal * .036, right, normal, right:Cross(normal))
 			part.Color = colors[(column * 7 + index * 5) % #colors + 1]
-			tile.at = row.at + math.abs(column) * .004 + (column + index) % 3 * .007
+			tile.at = row.at + math.abs(column) * .005 + (column + index) % 3 * .008
 			table.insert(active, tile)
 		end
 	end
@@ -1818,9 +1809,9 @@ local function makeFloorSweep()
 			if age >= .21 then
 				release(index)
 			elseif age >= 0 then
-				local peak = math.min(age / .025, 1)
-				local tail = 1 - math.clamp((age - .042) / .168, 0, 1)
-				tile.part.Transparency = 1 - .88 * peak * tail^2
+				local peak = math.min(age / .016, 1)
+				local tail = 1 - math.clamp((age - .029) / .181, 0, 1)
+				tile.part.Transparency = 1 - .96 * peak * tail^2
 			end
 		end
 		if nextRow > #rows and #active == 0 then
@@ -2043,7 +2034,7 @@ local function updateGrid(camera)
 		local z = zIndex * GRID_MAJOR - origin.Z
 		local anchor = axisX * x + axisZ * z
 		local opacity = strength * falloff(math.max(math.abs(x), math.abs(z)), 27, 57)
-		drawGridLine(item.post, anchor - postExtent, anchor + postExtent, opacity * .17)
+		drawGridLine(item.post, anchor - postExtent, anchor + postExtent, opacity * .11)
 
 		local y = gridDatum + (centerLevel + (xIndex + zIndex) % 2) * GRID_HEIGHT - origin.Y
 		local node = anchor + axisY * y
@@ -2066,14 +2057,14 @@ local function updateGrid(camera)
 		end
 
 		place(item.dot, point)
-		item.dot.BackgroundTransparency = 1 - opacity * .77
+		item.dot.BackgroundTransparency = 1 - opacity * .56
 		if item.number then
 			local index = xIndex - zIndex
 			if item.numberIndex ~= index then
 				item.numberIndex = index
-				item.number.Text = string.format("%04.1f", (84 + index * 1.7) % 100)
+				item.number.Text = string.format("%05.1f", (84 + index * 1.7) % 100)
 			end
-			item.number.TextTransparency = 1 - opacity * .47
+			item.number.TextTransparency = 1 - opacity * .52
 		end
 	end
 end
@@ -2127,7 +2118,7 @@ local function refreshEnemyTargets()
 		visual.opponent = opponent
 		if roleColor and visual.roleColor ~= roleColor then
 			visual.roleColor = roleColor
-			for _, panel in visual.standard:GetChildren() do
+			for _, panel in visual.colored do
 				panel.BackgroundColor3 = roleColor
 			end
 		end
@@ -2188,8 +2179,8 @@ local function updateEnemies(camera, localPosition, dt)
 		local urgent = carrier and visual.opponent
 		if urgent or visual.highlightStrength ~= strength then
 			visual.highlightStrength = strength
-			local outline = urgent and (.87 + .08 * math.sin(os.clock() * 5.2)) or (carrier and .92 or .73)
-			visual.highlight.FillTransparency = 1 - (carrier and .21 or .14) * strength
+			local outline = urgent and (.87 + .08 * math.sin(os.clock() * 5.2)) or (carrier and .92 or .66)
+			visual.highlight.FillTransparency = 1 - (carrier and .14 or .075) * strength
 			visual.highlight.OutlineTransparency = 1 - outline * strength
 		end
 		local head = visual.head
@@ -2206,7 +2197,7 @@ local function updateEnemies(camera, localPosition, dt)
 			if visual.warning and visual.warning.Visible then
 				local rightSide = point.X < viewport.X - 42
 				visual.warning.Position = UDim2.fromOffset(rightSide and 23 or -42, -9)
-				visual.warningText.Visible = rightSide and point.X < viewport.X - 137 and distance < 165
+				visual.warningPanel.Visible = rightSide and point.X < viewport.X - 137 and distance < 165
 			end
 		end
 	end
@@ -2306,10 +2297,10 @@ local function render(dt)
 	grade.TintColor = neutralTint:Lerp(tone.tint, strength)
 	if appliedStrength ~= strength then
 		appliedStrength = strength
-		grade.Contrast = .070 * strength
-		wash.BackgroundTransparency = 1 - .043 * strength
+		grade.Contrast = .083 * strength
+		wash.BackgroundTransparency = 1 - .052 * strength
 		for _, frame in vignette do
-			frame.BackgroundTransparency = 1 - .24 * strength
+			frame.BackgroundTransparency = 1 - .18 * strength
 		end
 	end
 	updateGrid(camera)
