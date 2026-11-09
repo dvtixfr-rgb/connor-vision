@@ -37,7 +37,9 @@ if type(previousCleanup) == "function" then
 	previousCleanup()
 end
 
+local gridBlue = Color3.fromRGB(113, 159, 190)
 local amber = Color3.fromRGB(238, 185, 43)
+local warningAmber = Color3.fromRGB(255, 214, 117)
 local carrierOrange = Color3.fromRGB(255, 109, 67)
 local carrierBlue = Color3.fromRGB(102, 203, 255)
 local navy = Color3.fromRGB(7, 13, 25)
@@ -50,6 +52,13 @@ local neutralTint = Color3.new(1, 1, 1)
 local FONT_FAMILY = "rbxasset://fonts/families/Montserrat.json"
 local font = Font.new(FONT_FAMILY, Enum.FontWeight.Medium)
 local RENDER_STEP = "ConnorTeamVision"
+local GRID_SPACING = 9
+local GRID_MAJOR = GRID_SPACING * 2
+local GRID_HEIGHT = 8
+local GRID_FADE_START = 24
+local GRID_FADE_END = 108
+local GRID_EXTENT = 142
+
 local function create(class, parent, properties)
 	local instance = Instance.new(class)
 	for key, value in properties do
@@ -73,12 +82,6 @@ local grade = create("ColorCorrectionEffect", Lighting, {
 	Name = "ConnorTeamVisionGrade",
 	Enabled = false,
 })
-local lensBlur = create("BlurEffect", Lighting, {
-	Name = "ConnorObservationLens",
-	Enabled = false,
-	Size = 0,
-})
-
 local scanAudio = create("Folder", SoundService, { Name = "ConnorVisionAudio" })
 local scanOnSound = create("Sound", scanAudio, {
 	Name = "ScanOn",
@@ -169,295 +172,189 @@ local function fade(frame, rotation, keypoints)
 	})
 end
 
+local READOUT_BLINK_DURATION = .134
+local READOUT_BLINK_PALE = Color3.fromRGB(226, 235, 244)
+local READOUT_BLINK_CYAN = Color3.fromRGB(60, 182, 214)
+-- The rooftop title resolves in three cuts: stacked bars, fragments, then one teal streak.
+local readoutBlinkCuts = {
+	{ { .025, .12, .95, .35, .73 }, { .028, .62, .94, .30, .69 } },
+	{ { .17, .36, .075, .15, .19 }, { .47, .44, .10, .16, .29 }, { .71, .38, .045, .14, .18 } },
+	{ { .03, .23, .94, .12, .79 } },
+}
+
+local function makeReadoutBlink(parent, x, y, width, height, z)
+	local layer = rect(parent, x, y, width, height, navy, 0, z)
+	layer.Visible = false
+	return { layer = layer, bars = {
+		rect(layer, 0, 0, 0, 0, READOUT_BLINK_PALE, 0, z),
+		rect(layer, 0, 0, 0, 0, READOUT_BLINK_PALE, 0, z),
+		rect(layer, 0, 0, 0, 0, READOUT_BLINK_PALE, 0, z),
+	} }
+end
+
+local function readoutBlinkPhase(age)
+	return if age < 0 then 0 elseif age < .034 then 1 elseif age < .10 then 2
+		elseif age < READOUT_BLINK_DURATION then 3 else 4
+end
+
+local function drawReadoutBlink(blink, age, color)
+	local phase = readoutBlinkPhase(age)
+	if blink.phase == phase and (phase == 0 or phase == 4 or blink.color == color) then
+		return phase
+	end
+	blink.phase, blink.color = phase, color
+	local cuts = readoutBlinkCuts[phase]
+	blink.layer.Visible = cuts ~= nil
+	if cuts then
+		for index, bar in blink.bars do
+			local cut = cuts[index]
+			bar.Visible = cut ~= nil
+			if cut then
+				bar.Position = UDim2.fromScale(cut[1], cut[2])
+				bar.Size = UDim2.fromScale(cut[3], cut[4])
+				bar.BackgroundColor3 = if phase == 3 then READOUT_BLINK_CYAN else color or READOUT_BLINK_PALE
+				bar.BackgroundTransparency = 1 - cut[5]
+			end
+		end
+	end
+	return phase
+end
+
 local wash = rect(gui, 0, 0, 0, 0, Color3.fromRGB(9, 31, 61), 0, 1)
 wash.Size = UDim2.fromScale(1, 1)
 
 local canvas = rect(gui, 0, 0, 0, 0, navy, 0, 3)
 local canvasScale = create("UIScale", canvas, { Scale = 1 })
+local gridLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 3)
+gridLayer.Size = UDim2.fromScale(1, 1)
 local highlightFolder = create("Folder", Workspace, { Name = "ConnorTeamVisionHighlights" })
 local markerLayer = rect(canvas, 0, 0, 0, 0, navy, 0, 6)
 markerLayer.Size = UDim2.fromScale(1, 1)
+local gridBands = {}
+local gridNodes = {}
 local enemyVisuals = {}
 local enemyTargets = {}
 local enemyRefresh = 0
 
--- The observation lattice is anchored to the map and is depth tested with the scene.
-local function makeObservationGrid()
-	local spacing, height = 11, 10
-	local lineRadius, postRadius = 5, 3
-	local halfSpan = spacing * (lineRadius + 1)
-	local lineColor = Color3.fromRGB(82, 130, 181)
-	local pointColor = Color3.fromRGB(105, 154, 204)
-	local colorSequence = ColorSequence.new(lineColor)
-	local function edgeFade(opacity)
-		return NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 1),
-			NumberSequenceKeypoint.new(.22, 1 - opacity * .72),
-			NumberSequenceKeypoint.new(.50, 1 - opacity),
-			NumberSequenceKeypoint.new(.78, 1 - opacity * .72),
-			NumberSequenceKeypoint.new(1, 1),
-		})
-	end
-	local majorFade, minorFade = edgeFade(.53), edgeFade(.30)
-	local uprightFade = edgeFade(.34)
-	local lines, points = {}, {}
-	local anchor, cell, lastEye, lastStep
-
-	local function makeLine(axis, offset, band)
-		local a = create("Attachment", anchor, {})
-		local b = create("Attachment", anchor, {})
-		local beam = create("Beam", anchor, {
-			Attachment0 = a,
-			Attachment1 = b,
-			Color = colorSequence,
-			Enabled = false,
-			FaceCamera = true,
-			LightEmission = .30,
-			LightInfluence = 0,
-			Segments = 8,
-		})
-		table.insert(lines, { beam = beam, a = a, b = b, axis = axis, offset = offset, band = band })
-	end
-
-	local function createPool()
-		anchor = create("Part", Workspace, {
-			Name = "ConnorObservationGrid",
-			Size = Vector3.new(.05, .05, .05),
-			Anchored = true,
-			CanCollide = false,
-			CanTouch = false,
-			CanQuery = false,
-			CastShadow = false,
-			Transparency = 1,
-		})
-		for band = -1, 2 do
-			for offset = -lineRadius, lineRadius do
-				makeLine("X", offset, band)
-				makeLine("Z", offset, band)
-			end
-		end
-		for x = -postRadius, postRadius do
-			for z = -postRadius, postRadius do
-				makeLine("Y", x, z)
-				-- Only intersections on the coarser lattice carry a point.
-				if (x + z) % 2 == 0 then
-					local at = create("Attachment", anchor, {})
-					local board = create("BillboardGui", at, {
-						Adornee = at,
-						AlwaysOnTop = false,
-						ClipsDescendants = false,
-						LightInfluence = 0,
-						MaxDistance = 64,
-						Size = UDim2.fromScale(.72, .16),
-						Enabled = false,
-					})
-					local dot = rect(board, 0, 0, 0, 0, pointColor, 0, 1)
-					dot.AnchorPoint = Vector2.new(.5, .5)
-					dot.Position = UDim2.fromScale(.5, .5)
-					dot.Size = UDim2.fromScale(.10, .45)
-					create("UICorner", dot, { CornerRadius = UDim.new(1, 0) })
-					local number = create("TextLabel", board, {
-						Position = UDim2.fromScale(.61, .04),
-						Size = UDim2.fromScale(.55, .9),
-						BackgroundTransparency = 1,
-						Text = "",
-						TextColor3 = pointColor,
-						TextScaled = true,
-						TextXAlignment = Enum.TextXAlignment.Left,
-						FontFace = font,
-					})
-					table.insert(points, { at = at, board = board, dot = dot, number = number, x = x, z = z })
-				end
-			end
-		end
-	end
-
-	local function placePool(center)
-		cell = center
-		anchor.Position = center
-		local xIndex = math.round(center.X / spacing)
-		local zIndex = math.round(center.Z / spacing)
-		for _, line in lines do
-			local offset = line.offset * spacing
-			local band = line.band * height
-			local width, transparency
-			if line.axis == "Y" then
-				local z = line.band * spacing
-				line.a.Position = Vector3.new(offset, -height, z)
-				line.b.Position = Vector3.new(offset, height * 2, z)
-				width, transparency = .012, uprightFade
-			else
-				local acrossX = line.axis == "X"
-				local major = ((if acrossX then zIndex else xIndex) + line.offset) % 2 == 0
-				if acrossX then
-					line.a.Position = Vector3.new(-halfSpan, band, offset)
-					line.b.Position = Vector3.new(halfSpan, band, offset)
-				else
-					line.a.Position = Vector3.new(offset, band, -halfSpan)
-					line.b.Position = Vector3.new(offset, band, halfSpan)
-				end
-				width = if major then .019 else .010
-				transparency = if major then majorFade else minorFade
-			end
-			line.beam.Width0, line.beam.Width1 = width, width
-			line.beam.Transparency = transparency
-		end
-		for _, point in points do
-			local x, z = xIndex + point.x, zIndex + point.z
-			local upper = (x * 3 + z * 5) % 5 > 1
-			point.at.Position = Vector3.new(point.x * spacing, if upper then height else 0, point.z * spacing)
-			point.number.Text = if (x - z) % 3 == 0 then string.format("%04.1f", ((x * 67 + z * 23 + 880) % 1000) / 10) else ""
-		end
-	end
-
-	local function setLineOpacity(line, alpha)
-		local step = math.round(alpha * 48)
-		if line.step ~= step then
-			line.step = step
-			line.beam.Enabled = step > 0
-			line.beam.LocalTransparencyModifier = 1 - step / 48
-		end
-	end
-
-	local function hide()
-		if not lastEye then
-			return
-		end
-		lastEye, lastStep = nil, nil
-		for _, line in lines do
-			setLineOpacity(line, 0)
-		end
-		for _, point in points do
-			point.board.Enabled = false
-		end
-	end
-
-	return {
-		update = function(camera, datum, opacity)
-			if opacity <= .012 or datum == nil then
-				hide()
-				return
-			end
-			if not anchor then
-				createPool()
-			end
-			local eye = camera.CFrame.Position
-			local center = Vector3.new(
-				math.round(eye.X / spacing) * spacing,
-				datum + math.floor((eye.Y - datum) / height) * height,
-				math.round(eye.Z / spacing) * spacing
-			)
-			local step = math.round(opacity * 48)
-			if center == cell and lastEye and (lastEye - eye).Magnitude < .4 and lastStep == step then
-				return
-			end
-			if center ~= cell then
-				placePool(center)
-			end
-			lastEye, lastStep = eye, step
-			local localEye = eye - center
-			for _, line in lines do
-				local p = line.a.Position - localEye
-				local d
-				if line.axis == "X" then
-					d = math.sqrt(p.Z * p.Z + p.Y * p.Y * 2)
-				elseif line.axis == "Z" then
-					d = math.sqrt(p.X * p.X + p.Y * p.Y * 2)
-				else
-					d = math.sqrt(p.X * p.X + p.Z * p.Z)
-				end
-				local weight = math.clamp(1 - (d - 5) / 49, 0, 1)
-				setLineOpacity(line, opacity * weight^1.65)
-			end
-			for _, point in points do
-				local distance = (point.at.Position - localEye).Magnitude
-				local weight = opacity * math.clamp(1 - (distance - 7) / 46, 0, 1)
-				point.board.Enabled = weight > .04
-				point.dot.BackgroundTransparency = 1 - .71 * weight
-				point.number.TextTransparency = 1 - .43 * weight
-			end
-		end,
-		hide = hide,
-		destroy = function()
-			if anchor then
-				anchor:Destroy()
-			end
-		end,
-	}
+local function makeGridLine(thickness)
+	local frame = rect(gridLayer, 0, 0, 1, 1, gridBlue, 0, 3)
+	frame.AnchorPoint = Vector2.new(.5, .5)
+	frame.Visible = false
+	local gradient = create("UIGradient", frame, {})
+	return { frame = frame, gradient = gradient, thickness = thickness, visible = false, alpha = 0 }
 end
 
-local observationGrid = makeObservationGrid()
-
-
-local clueGold = Color3.fromRGB(231, 200, 43)
-local clueOchre = Color3.fromRGB(170, 137, 12)
-local clueInk = Color3.fromRGB(8, 15, 21)
-local lockWhite = Color3.fromRGB(224, 229, 233)
-
-local function clueBodyColor(color)
-	return if color == clueGold or color == amber then clueOchre else color:Lerp(clueInk, .26)
-end
-
-local function makeClue(parent, size, color, z)
-	-- The point below the plate sits on the evidence position.
-	local plate = rect(parent, -26 * size, -52 * size, 52 * size, 39 * size, navy, 0, z)
-	local body = rect(plate, 6 * size, 0, 40 * size, 39 * size, clueBodyColor(color), .99, z)
-	local left = rect(plate, 0, 0, 3 * size, 39 * size, color, .99, z)
-	local right = rect(plate, 49 * size, 0, 3 * size, 39 * size, color, .99, z)
-	rect(plate, 25.5 * size, 0, size, 39 * size, clueInk, .26, z + 1)
-	rect(plate, 20.5 * size, 14 * size, 11 * size, 11 * size, clueInk, .98, z + 1)
-	local point = rect(plate, 23.5 * size, 49.5 * size, 5 * size, 5 * size, color, .99, z)
-	point.Rotation = 45
-	return { plate = plate, body = body, left = left, right = right, point = point }
-end
-
-local function recolorClue(clue, color)
-	if color == amber then
-		color = clueGold
+local function makeBand(level, radius, phase, opacity, thickness)
+	local lines = {}
+	for offset = -radius, radius do
+		table.insert(lines, {
+			offset = offset,
+			alongX = makeGridLine(thickness),
+			alongZ = makeGridLine(thickness),
+		})
 	end
-	clue.body.BackgroundColor3 = clueBodyColor(color)
-	clue.left.BackgroundColor3 = color
-	clue.right.BackgroundColor3 = color
-	clue.point.BackgroundColor3 = color
+	table.insert(gridBands, { level = level, phase = phase, radius = radius, opacity = opacity, lines = lines })
+end
+
+for level = -1, 2 do
+	makeBand(level, 7, 0, .25, 1)
+	makeBand(level, 3, GRID_SPACING, .075, 1)
+end
+
+for x = -3, 3 do
+	for z = -3, 3 do
+		local dot = rect(gridLayer, 0, 0, 2, 2, gridBlue, 0, 4)
+		dot.AnchorPoint = Vector2.new(.5, .5)
+		local number
+		if (x + z) % 3 == 0 then
+			number = create("TextLabel", dot, {
+				Position = UDim2.fromOffset(5, -10),
+				Size = UDim2.fromOffset(40, 12),
+				BackgroundTransparency = 1,
+				TextColor3 = gridBlue,
+				TextSize = 10,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				FontFace = font,
+				ZIndex = 4,
+			})
+		end
+		table.insert(gridNodes, {
+			x = x, z = z, dot = dot, number = number,
+			post = makeGridLine(1),
+		})
+	end
+end
+
+local function scanCorners(parent, radius, length, thickness, color, opacity, z)
+	for _, side in { -1, 1 } do
+		for _, vertical in { -1, 1 } do
+			local x = side * radius
+			local y = vertical * radius
+			rect(parent, if side < 0 then x else x - length, y, length + thickness, thickness, color, opacity, z)
+			rect(parent, x, if vertical < 0 then y else y - length, thickness, length, color, opacity, z)
+		end
+	end
 end
 
 local function makeEnemyVisual()
-	local marker = rect(markerLayer, 0, 0, 0, 0, navy, 0, 6)
+	local marker = rect(markerLayer, 0, 0, 0, 0, amber, 0, 6)
+	local markerScale = create("UIScale", marker, { Scale = 1 })
+	local standard = rect(marker, -17, -12, 34, 24, navy, .88, 6)
+	-- Detroit's clue locator: a split plate, two rails, and the point below it.
+	rect(standard, 3, 0, 28, 24, amber, .96, 7)
+	rect(standard, 0, 0, 1.55, 24, amber, .94, 7)
+	rect(standard, 32.45, 0, 1.55, 24, amber, .94, 7)
+	local seam = rect(standard, 16.5, 0, 1, 24, navy, .43, 8)
+	local aperture = rect(standard, 13.25, 8.25, 7.5, 7.5, navy, .91, 8)
+	local dot = rect(standard, 15.55, 30.5, 2.9, 2.9, amber, .93, 7)
+	dot.Rotation = 45
+	local colored = {}
+	for _, panel in standard:GetChildren() do
+		if panel ~= seam and panel ~= aperture then
+			table.insert(colored, panel)
+		end
+	end
 	local visual = {
-		marker = marker,
-		scale = create("UIScale", marker, { Scale = 1 }),
-		clue = makeClue(marker, 1, clueGold, 7),
+		marker = marker, scale = markerScale, standard = standard, colored = colored,
+		standardBlink = makeReadoutBlink(marker, -17, -12, 34, 24, 9),
 	}
 	marker.Visible = false
 	if prisonMode then
 		return visual
 	end
 
-	-- Use Detroit's locked objective symbol for a target behind a ForceField.
-	local warning = rect(marker, 31, -44, 61, 23, navy, .62, 8)
-	for _, x in { 0, 60 } do
-		rect(warning, x, 0, 1, 23, lockWhite, .57, 9)
-		local edge = if x == 0 then 0 else x - 3
-		rect(warning, edge, 0, 4, 1, lockWhite, .84, 9)
-		rect(warning, edge, 22, 4, 1, lockWhite, .84, 9)
-	end
-	rect(warning, 10, 6, 9, 1.5, lockWhite, .96, 9)
-	rect(warning, 10, 7.5, 1.5, 4, lockWhite, .96, 9)
-	rect(warning, 17.5, 7.5, 1.5, 4, lockWhite, .96, 9)
-	rect(warning, 8.5, 11, 12, 7, lockWhite, .96, 9)
-	create("TextLabel", warning, {
-		Position = UDim2.fromOffset(25, 1),
-		Size = UDim2.fromOffset(32, 21),
+	local warning = rect(marker, 23, -9, 0, 0, navy, 0, 7)
+	local warningArt = rect(warning, 0, 0, 0, 0, navy, 0, 7)
+	local badge = rect(warningArt, 0, 1, 20, 20, navy, .67, 7)
+	local icon = rect(badge, 10, 10, 0, 0, navy, 0, 8)
+	scanCorners(icon, 10, 4, 1, warningAmber, .83, 8)
+	rect(icon, -3.2, -5.8, 6.4, 1.25, warningAmber, .91, 8)
+	rect(icon, -3.2, -4.55, 1.25, 4.15, warningAmber, .91, 8)
+	rect(icon, 1.95, -4.55, 1.25, 4.15, warningAmber, .91, 8)
+	rect(icon, -4.6, -.7, 9.2, 6.4, warningAmber, .96, 8)
+	local warningPanel = rect(warningArt, 22, 1, 105, 20, navy, .71, 7)
+	fade(warningPanel, 0, {
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(.8, .18),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	rect(warningPanel, 0, 0, 89, 1, warningAmber, .54, 8)
+	create("TextLabel", warningPanel, {
+		Position = UDim2.fromOffset(6, 0),
+		Size = UDim2.fromOffset(97, 20),
 		BackgroundTransparency = 1,
-		Text = "[...]",
-		TextColor3 = lockWhite,
-		TextSize = 15,
+		Text = "PROTECTED",
+		TextColor3 = warningAmber,
+		TextSize = 12,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		FontFace = font,
-		ZIndex = 9,
+		ZIndex = 8,
 	})
 	warning.Visible = false
 	visual.warning = warning
+	visual.warningArt = warningArt
+	visual.warningPanel = warningPanel
+	visual.warningBlink = makeReadoutBlink(warning, 0, 1, 127, 20, 9)
 	return visual
 end
 
@@ -472,6 +369,7 @@ local function stopWatchingProtection(visual)
 	end
 	if visual.warning then
 		visual.warning.Visible = false
+		visual.warningAt = nil
 	end
 end
 
@@ -494,6 +392,9 @@ local function watchProtection(visual, character, root)
 		if fields[child] == parent then
 			fields[child] = nil
 			visual.warning.Visible = next(fields) ~= nil
+			if not visual.warning.Visible then
+				visual.warningAt = nil
+			end
 		end
 	end
 
@@ -514,6 +415,8 @@ end
 
 local function hideEnemy(visual)
 	visual.marker.Visible = false
+	visual.standardAt = nil
+	visual.lastOnScreen = nil
 	stopWatchingProtection(visual)
 	if visual.highlight then
 		visual.highlight:Destroy()
@@ -787,6 +690,7 @@ local function makeMissionBanner()
 	local height = 64
 	local white = Color3.fromRGB(233, 239, 247)
 	local cyan = Color3.fromRGB(118, 201, 243)
+	local confirmBlue = Color3.fromRGB(53, 172, 234)
 	local gray = Color3.fromRGB(148, 160, 176)
 	local overlay = create("ScreenGui", playerGui, {
 		Name = "ConnorMissionResult",
@@ -803,9 +707,7 @@ local function makeMissionBanner()
 		BackgroundTransparency = 1,
 	})
 	local uiScale = create("UIScale", readout, { Scale = 1 })
-	local reveal = rect(readout, 0, 0, 0, height, navy, 0, 1)
-	reveal.ClipsDescendants = true
-	local art = rect(reveal, 0, 0, 0, height, navy, 0, 1)
+	local art = rect(readout, 0, 0, 0, height, navy, 0, 1)
 	local strip = rect(art, 0, 4, 0, 42, Color3.fromRGB(5, 13, 22), 0, 1)
 	strip.Size = UDim2.new(1, 0, 0, 42)
 	fade(strip, 0, {
@@ -814,15 +716,6 @@ local function makeMissionBanner()
 		NumberSequenceKeypoint.new(.76, 0),
 		NumberSequenceKeypoint.new(1, 1),
 	})
-	local flash = rect(art, 0, 29, 0, 2, cyan, 0, 3)
-	flash.Size = UDim2.new(1, 0, 0, 2)
-	fade(flash, 0, {
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(.34, .14),
-		NumberSequenceKeypoint.new(.71, .52),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-
 	local title = create("TextLabel", art, {
 		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(7, 0),
@@ -837,6 +730,18 @@ local function makeMissionBanner()
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 2,
 	})
+	local blink = makeReadoutBlink(art, 0, 7, 0, 36, 4)
+	blink.layer.Size = UDim2.new(1, 0, 0, 36)
+	local fragments = {}
+	for _, cut in { { .21, .13, 16, 13, 4 }, { .49, .10, 19, 10, -5 }, { .70, .07, 13, 15, 6 } } do
+		local mask = rect(art, 0, 0, 0, 0, navy, 0, 3)
+		mask.ClipsDescendants = true
+		mask.Visible = false
+		local text = title:Clone()
+		text.ZIndex = 3
+		text.Parent = mask
+		table.insert(fragments, { mask = mask, text = text, cut = cut })
+	end
 	local killer = create("TextLabel", art, {
 		BackgroundTransparency = 1,
 		Position = UDim2.fromOffset(8, 45),
@@ -848,18 +753,32 @@ local function makeMissionBanner()
 		TextXAlignment = Enum.TextXAlignment.Left,
 		ZIndex = 2,
 	})
-	local startedAt, width, successful, lastSize
+	local startedAt, successful, lastSize
 	local function show(success, killerName)
 		successful = success
-		width = if success then 497 else 355
+		local width = if success then 497 else 355
 		readout.Size = UDim2.fromOffset(width, height)
 		art.Size = UDim2.fromOffset(width, height)
 		local result = if success then "SUCCESSFUL" else "FAILED"
 		title.Text = 'MISSION <font weight="600">' .. result .. '</font>'
+		title.TextTransparency = 1
+		title.TextStrokeTransparency = 1
+		strip.BackgroundTransparency = 1
+		for _, fragment in fragments do
+			local cut = fragment.cut
+			local x = math.floor(width * cut[1])
+			fragment.mask.Position = UDim2.fromOffset(x, cut[3])
+			fragment.mask.Size = UDim2.fromOffset(math.ceil(width * cut[2]), cut[4])
+			fragment.text.Position = UDim2.fromOffset(7 - x + cut[5], -cut[3])
+			fragment.text.Size = UDim2.fromOffset(width - 14, 48)
+			fragment.text.Text = title.Text
+			fragment.mask.Visible = false
+		end
 		killer.Visible = not success and killerName ~= nil
 		killer.Text = if killer.Visible then "@" .. killerName else ""
+		killer.TextTransparency = 1
 		startedAt = os.clock()
-		reveal.Size = UDim2.fromOffset(0, height)
+		drawReadoutBlink(blink, 0)
 		overlay.Enabled = true
 	end
 
@@ -880,17 +799,26 @@ local function makeMissionBanner()
 			uiScale.Scale = math.max(.05, math.min(pixels.Y / 1080, pixels.X / 860))
 		end
 
-		local open = math.clamp(age / .26, 0, 1)
 		local close = math.clamp((age - (duration - .55)) / .55, 0, 1)
-		local alpha = math.min(age / .14, 1) * (1 - close)
-		reveal.Size = UDim2.fromOffset(math.ceil(width * (1 - (1 - open)^2)), height)
-		local blueShift = math.clamp((age - .87) / .18, 0, 1)
-		local pulse = math.max(0, 1 - math.abs(age - .94) / .09)
+		local confirming = successful and age >= 1.03
+		local phase = drawReadoutBlink(blink, if confirming then age - 1.03 else age, if confirming then confirmBlue else nil)
+		local alpha = (if phase == 4 then 1 elseif phase == 3 then .78 else 0) * (1 - close)
+		local blueShift = math.clamp((age - .87) / .20, 0, 1)
 		strip.BackgroundTransparency = 1 - .24 * alpha
 		title.TextColor3 = if successful then white:Lerp(cyan, blueShift) else white:Lerp(gray, close)
 		title.TextTransparency = 1 - alpha
 		title.TextStrokeTransparency = 1 - .21 * alpha
-		flash.BackgroundTransparency = if successful then 1 - .46 * alpha * pulse else 1
+		for _, fragment in fragments do
+			local showing = phase == 2
+			if fragment.mask.Visible ~= showing then
+				fragment.mask.Visible = showing
+				if showing then
+					fragment.text.TextColor3 = title.TextColor3
+					fragment.text.TextTransparency = .52
+					fragment.text.TextStrokeTransparency = 1
+				end
+			end
+		end
 		killer.TextTransparency = 1 - .7 * alpha * math.clamp((age - .20) / .30, 0, 1)
 	end
 
@@ -1112,13 +1040,15 @@ local function makeFlagStatus()
 
 	local function revealPlate(x, y, width, height, paddingX, color, opacity)
 		local fullWidth, fullHeight = width + 2 * paddingX, height + 6
-		local mask = rect(overlay, x - paddingX, y - 3, 0, fullHeight, navy, 0, 2)
+		local mask = rect(overlay, x - paddingX, y - 3, fullWidth, fullHeight, navy, 0, 2)
 		mask.ClipsDescendants = true
 		mask.Visible = false
 		local frame = rect(mask, paddingX, 3, width, height, color, opacity, 2)
 		local edge = rect(mask, 0, 3, 1, height, white, .62, 5)
 		edge.Position = UDim2.new(1, -1, 0, 3)
-		return { mask = mask, frame = frame, edge = edge, width = fullWidth, height = fullHeight }
+		edge.Visible = false
+		local blink = makeReadoutBlink(mask, paddingX, 3, width, height, 5)
+		return { mask = mask, frame = frame, edge = edge, blink = blink, width = fullWidth, height = fullHeight }
 	end
 
 	-- Find Deviant objective: white strip, paired side cuts and offset dark subobjectives.
@@ -1156,31 +1086,42 @@ local function makeFlagStatus()
 		rows[index] = plate
 	end
 	local wanted = false
-	local revealProgress = 0
-	local drawnProgress
-	local visibleRows = 0
+	local closeProgress = 1
 
-	local function reveal(plate, fraction)
-		local visible = fraction > 0 and plate.frame.Visible
-		plate.mask.Visible = visible
-		if not visible then
-			return
-		end
-		local eased = 1 - (1 - fraction)^3
-		local width = math.ceil(plate.width * eased)
-		plate.mask.Size = UDim2.fromOffset(width, plate.height)
-		plate.edge.Visible = fraction < .96
+	local function restartBlink(plate, age)
+		plate.age = age
+		plate.mask.Size = UDim2.fromOffset(plate.width, plate.height)
+		plate.mask.Visible = false
+		plate.frame.Visible = false
+		plate.edge.Visible = false
+		drawReadoutBlink(plate.blink, -1)
 	end
 
-	local function drawReveal()
-		if drawnProgress == revealProgress then
+	local function updateBlink(plate, dt)
+		local age = plate.age
+		if age == nil then
 			return
 		end
-		drawnProgress = revealProgress
-		reveal(headerPlate, math.clamp(revealProgress / .39, 0, 1))
-		for index, row in rows do
-			local delay = .27 + .23 * (index - 1)
-			reveal(row, math.clamp((revealProgress - delay) / (1 - delay), 0, 1))
+		local phase = drawReadoutBlink(plate.blink, age)
+		plate.mask.Visible = phase > 0
+		plate.frame.Visible = phase >= 3
+		if phase == 4 then
+			plate.age = nil
+		else
+			local nextAge = age + dt
+			plate.age = if age < 0 and nextAge > 0 then 0 else nextAge
+		end
+	end
+
+	local function closePlate(plate, fraction)
+		if plate.age ~= nil then
+			plate.age = nil
+			drawReadoutBlink(plate.blink, READOUT_BLINK_DURATION)
+		end
+		if plate.frame.Visible and plate.mask.Visible then
+			local width = math.ceil(plate.width * (1 - (1 - fraction)^3))
+			plate.mask.Size = UDim2.fromOffset(width, plate.height)
+			plate.edge.Visible = fraction < .96
 		end
 	end
 
@@ -1474,7 +1415,14 @@ local function makeFlagStatus()
 		local function show(role, state, takenColor)
 			count += 1
 			local row = rows[count]
-			row.frame.Visible = true
+			local changed = not row.listed or row.role.Text ~= role or row.state.Text ~= state
+			row.listed = true
+			if not changed then
+				return
+			end
+			if wanted and (row.age == nil or row.age >= 0) then
+				restartBlink(row, 0)
+			end
 			row.role.Text = role
 			row.state.Text = state
 			row.state.TextColor3 = if state == "TAKEN" then takenColor elseif state == "UNKNOWN" then quiet else white
@@ -1491,11 +1439,9 @@ local function makeFlagStatus()
 			show("", "UNKNOWN", quiet)
 		end
 		for index = count + 1, #rows do
-			rows[index].frame.Visible = false
-		end
-		if visibleRows ~= count then
-			visibleRows = count
-			drawnProgress = nil
+			local row = rows[index]
+			row.listed = false
+			row.mask.Visible = false
 		end
 	end
 
@@ -1520,11 +1466,15 @@ local function makeFlagStatus()
 
 	local function open()
 		wanted = true
+		closeProgress = 1
+		restartBlink(headerPlate, 0)
+		for index, row in rows do
+			restartBlink(row, -index * .045)
+		end
 		if not statusGui.Enabled then
 			startIndex()
 			statusGui.Enabled = true
 			updateStatus()
-			drawReveal()
 		end
 	end
 
@@ -1540,8 +1490,6 @@ local function makeFlagStatus()
 		end,
 		close = function()
 			wanted = false
-			revealProgress = 0
-			drawnProgress = nil
 			statusGui.Enabled = false
 		end,
 		update = function(camera, dt)
@@ -1549,11 +1497,22 @@ local function makeFlagStatus()
 				return
 			end
 			resizeReadouts(camera)
-			local step = if wanted then dt / .32 else -dt / .18
-			revealProgress = math.clamp(revealProgress + step, 0, 1)
-			drawReveal()
-			if not wanted and revealProgress == 0 then
-				statusGui.Enabled = false
+			if wanted then
+				updateBlink(headerPlate, dt)
+				for _, row in rows do
+					if row.listed then
+						updateBlink(row, dt)
+					end
+				end
+			else
+				closeProgress = math.max(0, closeProgress - dt / .18)
+				closePlate(headerPlate, closeProgress)
+				for _, row in rows do
+					closePlate(row, closeProgress)
+				end
+				if closeProgress == 0 then
+					statusGui.Enabled = false
+				end
 			end
 		end,
 		destroy = function()
@@ -1604,6 +1563,7 @@ local targetTone = {
 	contrast = .032,
 }
 local tone = table.clone(targetTone)
+local gridView = {}
 
 local function surfaceColor(hit)
 	if not hit then
@@ -1680,35 +1640,6 @@ local function smoothstep(progress)
 	return progress * progress * (3 - 2 * progress)
 end
 
-local lensCamera, lensBaseline, lensApplied
-local function resetLens()
-	if lensCamera and lensCamera.FieldOfView == lensApplied then
-		lensCamera.FieldOfView = lensBaseline
-	end
-	lensCamera, lensBaseline, lensApplied = nil, nil, nil
-	lensBlur.Enabled = false
-end
-
-local function updateLens(camera, amount)
-	if amount <= .01 then
-		if lensCamera then
-			resetLens()
-		end
-		return
-	end
-	if lensCamera ~= camera then
-		resetLens()
-		lensCamera = camera
-		lensBaseline = camera.FieldOfView
-	elseif camera.FieldOfView ~= lensApplied then
-		lensBaseline = camera.FieldOfView
-	end
-	camera.FieldOfView = math.max(1, lensBaseline - 4.2 * amount)
-	lensApplied = camera.FieldOfView
-	lensBlur.Size = 5.5 * amount
-	lensBlur.Enabled = true
-end
-
 local function place(frame, point)
 	frame.Position = UDim2.fromOffset(point.X, point.Y)
 end
@@ -1726,12 +1657,12 @@ local function makeProjectileScan()
 		{
 			name = "Explosives", names = { Missile = true, Rocket = true, Part = true },
 			explosive = true, color = Color3.fromRGB(255, 128, 75), limit = 32,
-			objects = {}, markers = {}, shown = 0,
+			objects = {}, appearances = {}, markers = {}, shown = 0,
 		},
 		{
 			name = "Projectiles", names = { Bullet = true },
-			explosive = false, color = clueGold, limit = 48,
-			objects = {}, markers = {}, shown = 0,
+			explosive = false, color = warningAmber, limit = 48,
+			objects = {}, appearances = {}, markers = {}, shown = 0,
 		},
 	}
 	local debris
@@ -1739,8 +1670,21 @@ local function makeProjectileScan()
 
 	local function makeMarker(group)
 		local marker = rect(layer, 0, 0, 0, 0, navy, 0, 5)
-		makeClue(marker, if group.explosive then .56 else .35, group.color, 5)
-		return marker
+		local art = rect(marker, 0, 0, 0, 0, navy, 0, 5)
+		local size = if group.explosive then 4.5 else 3.5
+		local shadow = rect(art, -size / 2 - 1, -size / 2 - 1, size + 2, size + 2, navy, .82, 5)
+		shadow.Rotation = 45
+		local diamond = rect(art, -size / 2, -size / 2, size, size, group.color, .98, 5)
+		diamond.Rotation = 45
+		if group.explosive then
+			scanCorners(art, 13, 5.5, 1.2, group.color, .92, 5)
+			scanCorners(art, 9.5, 3, 1, group.color, .30, 5)
+		else
+			rect(art, -6, -.5, 2, 1, group.color, .52, 5)
+			rect(art, 4, -.5, 2, 1, group.color, .52, 5)
+		end
+		local span = if group.explosive then 26 else 12
+		return { frame = marker, art = art, blink = makeReadoutBlink(marker, -span / 2, -span / 2, span, span, 6) }
 	end
 
 	local function watchFolder(group, folder)
@@ -1755,6 +1699,7 @@ local function makeProjectileScan()
 		end
 		group.folder = folder
 		table.clear(group.objects)
+		table.clear(group.appearances)
 		if not folder then
 			return
 		end
@@ -1773,6 +1718,7 @@ local function makeProjectileScan()
 		group.added = folder.ChildAdded:Connect(track)
 		group.removed = folder.ChildRemoved:Connect(function(object)
 			group.objects[object] = nil
+			group.appearances[object] = nil
 		end)
 		for _, object in folder:GetChildren() do
 			track(object)
@@ -1781,7 +1727,7 @@ local function makeProjectileScan()
 
 	local function hideUnused(group, count)
 		for i = count + 1, group.shown do
-			group.markers[i].Visible = false
+			group.markers[i].frame.Visible = false
 		end
 		group.shown = count
 	end
@@ -1816,6 +1762,7 @@ local function makeProjectileScan()
 				for object, isPart in group.objects do
 					if now >= deadlines[object] then
 						group.objects[object] = nil
+						group.appearances[object] = nil
 						continue
 					end
 					if object.Parent ~= folder or not group.names[object.Name] then
@@ -1832,9 +1779,18 @@ local function makeProjectileScan()
 						marker = makeMarker(group)
 						group.markers[count] = marker
 					end
-					place(marker, point)
+					local appearance = group.appearances[object]
+					if not appearance then
+						appearance = { at = now, seenAt = now }
+						group.appearances[object] = appearance
+					elseif now - appearance.seenAt > .18 then
+						appearance.at = now
+					end
+					appearance.seenAt = now
+					place(marker.frame, point)
+					marker.art.Visible = drawReadoutBlink(marker.blink, now - appearance.at) >= 3
 					if count > group.shown then
-						marker.Visible = true
+						marker.frame.Visible = true
 					end
 					if count == group.limit then
 						break
@@ -1848,6 +1804,7 @@ local function makeProjectileScan()
 	local function stop()
 		for _, group in groups do
 			hideUnused(group, 0)
+			table.clear(group.appearances)
 		end
 	end
 
@@ -2180,6 +2137,241 @@ end
 
 local roomSweep = makeRoomSweep()
 
+local function clipAxis(origin, delta, limit, first, last)
+	if math.abs(delta) < .0001 then
+		if origin < 0 or origin > limit then
+			return nil
+		end
+		return first, last
+	end
+
+	local edgeA = -origin / delta
+	local edgeB = (limit - origin) / delta
+	first = math.max(first, math.min(edgeA, edgeB))
+	last = math.min(last, math.max(edgeA, edgeB))
+	if first > last then
+		return nil
+	end
+	return first, last
+end
+
+local function setLineVisible(line, visible)
+	if line.visible ~= visible then
+		line.visible = visible
+		line.frame.Visible = visible
+	end
+end
+
+local function gridPoint(point)
+	return Vector2.new(
+		gridView.center.X + point.X / point.Z * gridView.focal.X,
+		gridView.center.Y - point.Y / point.Z * gridView.focal.Y
+	)
+end
+
+local depthGradients = {}
+local fadeSpan = GRID_FADE_END - GRID_FADE_START
+
+local function depthWeight(depth)
+	local weight = math.clamp((gridView.fadeEnd - depth) * gridView.inverseFadeSpan, 0, 1)
+	return weight * weight
+end
+
+local function depthLevel(inverseDepth)
+	return math.round(depthWeight(1 / inverseDepth) * 8)
+end
+
+-- Perspective depth varies with reciprocal Z along the projected segment.
+local function applyDepthFade(line, inverseNear, inverseFar)
+	local first = depthLevel(inverseNear)
+	local last = depthLevel(inverseFar)
+	if first == 0 and last == 0 then
+		return false
+	end
+
+	local step = inverseFar - inverseNear
+	local quarter = depthLevel(inverseNear + step * .22)
+	local middle = depthLevel(inverseNear + step * .5)
+	local threeQuarters = depthLevel(inverseNear + step * .78)
+	local key = ((((first * 9 + quarter) * 9 + middle) * 9 + threeQuarters) * 9 + last)
+	if line.depthKey ~= key then
+		local sequence = depthGradients[key]
+		if not sequence then
+			sequence = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1 - first / 8),
+				NumberSequenceKeypoint.new(.22, 1 - quarter / 8),
+				NumberSequenceKeypoint.new(.5, 1 - middle / 8),
+				NumberSequenceKeypoint.new(.78, 1 - threeQuarters / 8),
+				NumberSequenceKeypoint.new(1, 1 - last / 8),
+			})
+			depthGradients[key] = sequence
+		end
+		line.depthKey = key
+		line.gradient.Transparency = sequence
+	end
+	return true
+end
+
+-- Endpoints are already in camera space. Project only the visible segment.
+local function drawGridLine(line, start, finish, opacity)
+	if opacity < .006 then
+		setLineVisible(line, false)
+		return
+	end
+	local near = .85
+	local clipStart, clipEnd = clipAxis(start.Z - near, finish.Z - start.Z, gridView.fadeEnd - near, 0, 1)
+	if not clipStart then
+		setLineVisible(line, false)
+		return
+	end
+	if clipStart > 0 or clipEnd < 1 then
+		local segment = finish - start
+		finish = start + segment * clipEnd
+		start += segment * clipStart
+	end
+
+	local a = gridPoint(start)
+	local b = gridPoint(finish)
+	local delta = b - a
+	local first, last = clipAxis(a.X, delta.X, viewport.X, 0, 1)
+	if first then
+		first, last = clipAxis(a.Y, delta.Y, viewport.Y, first, last)
+	end
+	if not first then
+		setLineVisible(line, false)
+		return
+	end
+	local inverseZ = 1 / start.Z
+	local inverseStep = 1 / finish.Z - inverseZ
+	if not applyDepthFade(line, inverseZ + inverseStep * first, inverseZ + inverseStep * last) then
+		setLineVisible(line, false)
+		return
+	end
+
+	local frame = line.frame
+	place(frame, a + delta * ((first + last) / 2))
+	frame.Size = UDim2.fromOffset(delta.Magnitude * (last - first), line.thickness)
+	frame.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+	local alpha = math.round(opacity * 255)
+	if line.alpha ~= alpha then
+		line.alpha = alpha
+		frame.BackgroundTransparency = 1 - alpha / 255
+	end
+	setLineVisible(line, true)
+end
+
+local function falloff(distance, near, far)
+	return 1 - math.clamp((distance - near) / (far - near), 0, 1)
+end
+
+local function updateGrid(camera)
+	local view = gridView
+	local eye = camera.CFrame
+	local fov = camera.FieldOfView
+	local lensChanged = view.camera ~= camera or view.fov ~= fov or view.viewport ~= viewport
+	if not lensChanged and view.eye == eye and view.strength == strength and view.datum == gridDatum then
+		return
+	end
+
+	if lensChanged then
+		local ahead = eye.Position + eye.LookVector * 8
+		local center = project(camera, ahead)
+		local offset = project(camera, ahead + eye.RightVector + eye.UpVector)
+		view.center = center
+		view.focal = Vector2.new((offset.X - center.X) * 8, (center.Y - offset.Y) * 8)
+		view.camera = camera
+		view.fov = fov
+		view.viewport = viewport
+	end
+	view.eye = eye
+	view.strength = strength
+	view.datum = gridDatum
+	view.fadeEnd = GRID_FADE_START + fadeSpan * strength
+	view.inverseFadeSpan = 1 / math.max(1, view.fadeEnd - GRID_FADE_START)
+
+	local origin = eye.Position
+	local right, up, look = eye.RightVector, eye.UpVector, eye.LookVector
+	local axisX = Vector3.new(right.X, up.X, look.X)
+	local axisY = Vector3.new(right.Y, up.Y, look.Y)
+	local axisZ = Vector3.new(right.Z, up.Z, look.Z)
+	local extentX, extentZ = axisX * GRID_EXTENT, axisZ * GRID_EXTENT
+	local centerLevel = math.floor((origin.Y - gridDatum) / GRID_HEIGHT)
+
+	-- World coordinates stay fixed. Only the pool of visible lines follows the view.
+	for _, band in gridBands do
+		local y = gridDatum + (centerLevel + band.level) * GRID_HEIGHT - origin.Y
+		local height = math.abs(y)
+		local separation = math.clamp((height - .45) / 2.25, 0, 1)
+		local bandOpacity = band.opacity * strength * separation * falloff(height, 6, 15)
+		if bandOpacity < .006 then
+			for _, item in band.lines do
+				setLineVisible(item.alongX, false)
+				setLineVisible(item.alongZ, false)
+			end
+			continue
+		end
+
+		local xStart = math.round((origin.X - band.phase) / GRID_MAJOR) * GRID_MAJOR + band.phase - origin.X
+		local zStart = math.round((origin.Z - band.phase) / GRID_MAJOR) * GRID_MAJOR + band.phase - origin.Z
+		local reach = band.radius * GRID_MAJOR
+		local planeOffset = axisY * y
+		for _, item in band.lines do
+			local offset = item.offset * GRID_MAJOR
+			local x, z = xStart + offset, zStart + offset
+			local xAnchor = planeOffset + axisZ * z
+			local zAnchor = planeOffset + axisX * x
+			drawGridLine(item.alongX, xAnchor - extentX, xAnchor + extentX,
+				bandOpacity * falloff(math.abs(z), reach * .44, reach))
+			drawGridLine(item.alongZ, zAnchor - extentZ, zAnchor + extentZ,
+				bandOpacity * falloff(math.abs(x), reach * .44, reach))
+		end
+	end
+
+	local majorX = math.round(origin.X / GRID_MAJOR)
+	local majorZ = math.round(origin.Z / GRID_MAJOR)
+	local postExtent = axisY * 14
+	for _, item in gridNodes do
+		local xIndex = majorX + item.x
+		local zIndex = majorZ + item.z
+		local x = xIndex * GRID_MAJOR - origin.X
+		local z = zIndex * GRID_MAJOR - origin.Z
+		local anchor = axisX * x + axisZ * z
+		local opacity = strength * falloff(math.max(math.abs(x), math.abs(z)), 27, 57)
+		drawGridLine(item.post, anchor - postExtent, anchor + postExtent, opacity * .11)
+
+		local y = gridDatum + (centerLevel + (xIndex + zIndex) % 2) * GRID_HEIGHT - origin.Y
+		local node = anchor + axisY * y
+		opacity *= depthWeight(node.Z)
+		local point
+		if node.Z > 2.5 and opacity > .025 then
+			local projected = gridPoint(node)
+			if projected.X >= 0 and projected.X <= viewport.X
+				and projected.Y >= 0 and projected.Y <= viewport.Y then
+				point = projected
+			end
+		end
+		local visible = point ~= nil
+		if item.visible ~= visible then
+			item.visible = visible
+			item.dot.Visible = visible
+		end
+		if not point then
+			continue
+		end
+
+		place(item.dot, point)
+		item.dot.BackgroundTransparency = 1 - opacity * .56
+		if item.number then
+			local index = xIndex - zIndex
+			if item.numberIndex ~= index then
+				item.numberIndex = index
+				item.number.Text = string.format("%05.1f", (84 + index * 1.7) % 100)
+			end
+			item.number.TextTransparency = 1 - opacity * .52
+		end
+	end
+end
+
 local function refreshEnemyTargets()
 	table.clear(enemyTargets)
 	local ownTeam = if flagMode then activeTeam(player) elseif prisonMode then player.Team else nil
@@ -2229,11 +2421,18 @@ local function refreshEnemyTargets()
 		visual.opponent = opponent
 		if roleColor and visual.roleColor ~= roleColor then
 			visual.roleColor = roleColor
-			recolorClue(visual.clue, roleColor)
+			for _, panel in visual.colored do
+				panel.BackgroundColor3 = roleColor
+			end
 		end
 		visual.root = root
 		visual.humanoid = humanoid
 		visual.head = head and head:IsA("BasePart") and head or nil
+		if visual.character ~= character then
+			visual.standardAt = nil
+			visual.lastOnScreen = nil
+			visual.highlightAt = os.clock()
+		end
 		visual.character = character
 		if visual.warning then
 			watchProtection(visual, character, root)
@@ -2245,6 +2444,7 @@ local function refreshEnemyTargets()
 	end
 end
 
+local highlightBlinkAlpha = { .79, .29, .88, 1 }
 local function updateEnemies(camera, localPosition, dt)
 	enemyRefresh -= dt
 	if enemyRefresh <= 0 then
@@ -2252,6 +2452,7 @@ local function updateEnemies(camera, localPosition, dt)
 		refreshEnemyTargets()
 	end
 
+	local now = os.clock()
 	for _, visual in enemyTargets do
 		local root = visual.root
 		local carrier = flagStatus and flagStatus.carriers[visual.player]
@@ -2269,7 +2470,8 @@ local function updateEnemies(camera, localPosition, dt)
 			or visual.roleColor or amber
 		if visual.markerColor ~= color then
 			visual.markerColor = color
-			visual.clue.plate.Visible = carrier == nil
+			visual.standardAt = nil
+			visual.highlightAt = now
 			if visual.highlight then
 				visual.highlight.FillColor = color
 				visual.highlight.OutlineColor = color
@@ -2283,14 +2485,17 @@ local function updateEnemies(camera, localPosition, dt)
 				FillColor = color,
 				OutlineColor = color,
 			})
+			visual.highlightAt = now
 			visual.highlightStrength = nil
 		end
 		local urgent = carrier and visual.opponent
-		if urgent or visual.highlightStrength ~= strength then
-			visual.highlightStrength = strength
-			local outline = urgent and (.87 + .08 * math.sin(os.clock() * 5.2)) or (carrier and .92 or .52)
-			visual.highlight.FillTransparency = 1 - (carrier and .14 or .035) * strength
-			visual.highlight.OutlineTransparency = 1 - outline * strength
+		local phase = readoutBlinkPhase(now - visual.highlightAt)
+		local highlightStrength = strength * highlightBlinkAlpha[phase]
+		if urgent or visual.highlightStrength ~= highlightStrength then
+			visual.highlightStrength = highlightStrength
+			local outline = urgent and (.87 + .08 * math.sin(now * 5.2)) or (carrier and .92 or .66)
+			visual.highlight.FillTransparency = 1 - (carrier and .14 or .075) * highlightStrength
+			visual.highlight.OutlineTransparency = 1 - outline * highlightStrength
 		end
 		local head = visual.head
 		local markerPoint = root.Position + Vector3.new(0, 3, 0)
@@ -2298,16 +2503,35 @@ local function updateEnemies(camera, localPosition, dt)
 			markerPoint = head.Position + Vector3.new(0, head.Size.Y / 2 + .55, 0)
 		end
 		local point, onScreen = project(camera, markerPoint)
-		local protected = visual.warning ~= nil and visual.warning.Visible
-		visual.marker.Visible = onScreen and (not carrier or protected)
+		local showingWarning = visual.warning ~= nil and visual.warning.Visible
+		visual.marker.Visible = onScreen and (not carrier or showingWarning)
 		if visual.marker.Visible then
 			place(visual.marker, point)
 			local distance = (root.Position - localPosition).Magnitude
-			visual.scale.Scale = math.clamp(1 - distance / 285, .43, 1)
-			visual.clue.plate.Rotation = (point.X / viewport.X - .5) * 7
-			if protected then
-				local warningX = if carrier then -30 elseif point.X < viewport.X - 96 then 31 else -92
-				visual.warning.Position = UDim2.fromOffset(warningX, -44)
+			visual.scale.Scale = math.clamp(1 - distance / 340, .45, .92)
+			if carrier then
+				visual.standard.Visible = false
+				drawReadoutBlink(visual.standardBlink, -1)
+			else
+				if not visual.standardAt or now - visual.lastOnScreen > .18 then
+					visual.standardAt = now
+				end
+				visual.lastOnScreen = now
+				visual.standard.Visible = drawReadoutBlink(visual.standardBlink, now - visual.standardAt) >= 3
+			end
+			if showingWarning then
+				local rightSide = point.X < viewport.X - 42
+				local showPanel = rightSide and point.X < viewport.X - 137 and distance < 165
+				visual.warning.Position = UDim2.fromOffset(rightSide and 23 or -42, -9)
+				visual.warningPanel.Visible = showPanel
+				if not visual.warningAt then
+					visual.warningAt = now
+				end
+				if visual.warningWide ~= showPanel then
+					visual.warningWide = showPanel
+					visual.warningBlink.layer.Size = UDim2.fromOffset(if showPanel then 127 else 20, 20)
+				end
+				visual.warningArt.Visible = drawReadoutBlink(visual.warningBlink, now - visual.warningAt) >= 3
 			end
 		end
 	end
@@ -2326,7 +2550,6 @@ local function stopScan(restoreCharacter)
 	scanStarting = false
 	exitAge = nil
 	strength = 0
-	resetLens()
 	if remoteScan then
 		remoteScan.stop(restoreCharacter ~= false)
 	end
@@ -2362,8 +2585,6 @@ local function render(dt)
 		if scanEnabled and not scanStarting then
 			resetScanOrigin()
 		end
-		resetLens()
-		observationGrid.hide()
 		projectileScan.stop()
 		roomSweep.stop()
 		if flagStatus then
@@ -2379,7 +2600,6 @@ local function render(dt)
 	gui.Enabled = active
 	if not active then
 		grade.Enabled = false
-		observationGrid.hide()
 		return
 	end
 
@@ -2409,13 +2629,9 @@ local function render(dt)
 	if scanEnabled then
 		scanAge += dt
 		strength = smoothstep((scanAge - .11) / .29)
-		local focus = math.clamp(scanAge / .175, 0, 1)
-		updateLens(camera, math.sin(focus * math.pi))
 	else
 		exitAge += dt
 		strength = exitStrength * (1 - smoothstep((exitAge - .12) / .42))
-		local focus = math.clamp((exitAge - .46) / .17, 0, 1)
-		updateLens(camera, math.sin(focus * math.pi))
 	end
 
 	local sweeping = roomSweep.update(camera, position, dt)
@@ -2437,7 +2653,10 @@ local function render(dt)
 		grade.TintColor = neutralTint:Lerp(tone.tint, strength)
 	end
 	wash.BackgroundTransparency = 1 - tone.wash * strength
-	observationGrid.update(camera, gridDatum, strength)
+	gridLayer.Visible = strength > .006 and gridDatum ~= nil
+	if gridLayer.Visible then
+		updateGrid(camera)
+	end
 	if scanEnabled and scanAge >= .33 then
 		projectileScan.update(camera)
 		markerLayer.Visible = true
@@ -2555,8 +2774,6 @@ local function cleanup()
 	end
 	projectileScan.destroy()
 	roomSweep.destroy()
-	observationGrid.destroy()
-	resetLens()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
@@ -2569,7 +2786,6 @@ local function cleanup()
 		flagStatus.destroy()
 	end
 	grade:Destroy()
-	lensBlur:Destroy()
 	scanAudio:Destroy()
 	gui:Destroy()
 end
