@@ -2671,8 +2671,8 @@ local function stopScan(restoreCharacter)
 	hideEnemies()
 end
 
-local function makeReconstruction()
-	local animation = create("Animation", nil, { AnimationId = "rbxassetid://12772543293" })
+local function makeReconstruction(animationId)
+	local animation = if animationId then create("Animation", nil, { AnimationId = animationId }) else nil
 	local cameraStep = "ConnorVisionRespawnCamera"
 	local watchedCharacter, death, deathConnection, activeTrack, cameraHold
 	local destroyed = false
@@ -2804,7 +2804,7 @@ local function makeReconstruction()
 			end
 			releaseCamera(hold)
 		end
-		if destroyed or player.Character ~= character or aliveRoot(character) ~= root then
+		if not animation or destroyed or player.Character ~= character or aliveRoot(character) ~= root then
 			return
 		end
 
@@ -2882,11 +2882,16 @@ local function makeReconstruction()
 			deathConnection:Disconnect()
 		end
 		clearTrack()
-		animation:Destroy()
+		if animation then
+			animation:Destroy()
+		end
 	end
 end
 
-local stopReconstruction = if battlegroundsMode then makeReconstruction() else nil
+local stopReconstruction
+if baseplateMode or battlegroundsMode then
+	stopReconstruction = makeReconstruction(if battlegroundsMode then "rbxassetid://12772543293" else nil)
+end
 
 local function render(dt)
 	if baseplateResults then
