@@ -2677,6 +2677,31 @@ local function makeReconstruction(animationId)
 	local watchedCharacter, death, deathConnection, activeTrack, cameraHold
 	local destroyed = false
 
+	local function announceReboot(character)
+		if destroyed or player.Character ~= character or not aliveRoot(character) then
+			return
+		end
+		local chat = game:GetService("TextChatService")
+		local channels = chat:FindFirstChild("TextChannels")
+		if not channels then
+			return
+		end
+		local line = "RK800 online. Resuming mission."
+		local general = channels:FindFirstChild("RBXGeneral")
+		if general and general:IsA("TextChannel") then
+			local ok, message = pcall(general.SendAsync, general, line)
+			if ok and message and (message.Status == Enum.TextChatMessageStatus.Success
+				or message.Status == Enum.TextChatMessageStatus.Sending) then
+				return
+			end
+		end
+		local system = channels:FindFirstChild("RBXSystem") or general
+		if system and system:IsA("TextChannel") and not destroyed and player.Character == character
+			and aliveRoot(character) then
+			system:DisplaySystemMessage(line)
+		end
+	end
+
 	local function clearTrack()
 		local track = activeTrack
 		activeTrack = nil
@@ -2804,7 +2829,13 @@ local function makeReconstruction(animationId)
 			end
 			releaseCamera(hold)
 		end
-		if not animation or destroyed or player.Character ~= character or aliveRoot(character) ~= root then
+		if destroyed or player.Character ~= character or aliveRoot(character) ~= root then
+			return
+		end
+		if baseplateMode then
+			task.defer(announceReboot, character)
+		end
+		if not animation then
 			return
 		end
 
