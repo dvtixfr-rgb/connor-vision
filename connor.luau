@@ -1879,6 +1879,7 @@ local projectileScan = makeProjectileScan()
 local function makeRoomSweep()
 	local maxDepth = 74
 	local travelTime, holdTime = .51, .15
+	local floorRadius, floorTravelTime = 120, .65
 	local viewColumns, viewRows = 7, 5
 	local rayLimit = 44
 	local colors = {
@@ -1890,8 +1891,9 @@ local function makeRoomSweep()
 	}
 	local pools = { Part = {}, WedgePart = {} }
 	local active, rows, visibleDepths, frontHits = {}, {}, {}, {}
+	local floorTiles = {}
 	local folder, origin, forward, side
-	local elapsed, nextRow, nextProbe, viewProbe = 0, 1, 1, 0
+	local elapsed, nextRow, nextProbe, viewProbe, nextTile = 0, 1, 1, 0, 1
 	local pending, direction
 	local nearDepth, reach, lead, aspect, viewHeight
 	local hasCeiling
@@ -1900,8 +1902,30 @@ local function makeRoomSweep()
 	ray.IgnoreWater = true
 	ray.RespectCanCollide = true
 	local up = Vector3.yAxis
+	local floorRay = -up * 30
 	local axes = { "X", "Y", "Z" }
 	local wallHeights = { -1.6, 1.8, 5.2, 8.6 }
+
+	local function addFloorTiles(size, inner, outer)
+		local half = size / 2
+		for x = -outer + half, outer - half, size do
+			for z = -outer + half, outer - half, size do
+				local distance = math.sqrt(x * x + z * z)
+				if distance <= floorRadius and (math.abs(x) >= inner or math.abs(z) >= inner) then
+					table.insert(floorTiles, {
+						offset = Vector3.new(x, 1.5, z), size = size - .045,
+						fraction = distance / floorRadius,
+					})
+				end
+			end
+		end
+	end
+
+	-- The tiers share their edges. Larger tiles keep the outer ring within the ray budget.
+	addFloorTiles(4, 0, 16)
+	addFloorTiles(8, 16, 48)
+	addFloorTiles(12, 48, floorRadius)
+	table.sort(floorTiles, function(a, b) return a.fraction < b.fraction end)
 
 	local function release(index)
 		local facet = active[index]
@@ -2014,6 +2038,30 @@ local function makeRoomSweep()
 		end
 	end
 
+	local function paintFloor(budget)
+		while budget > 0 do
+			local tile = floorTiles[nextTile]
+			if not tile then
+				break
+			end
+			local time = lead + (if direction > 0 then floorTravelTime * tile.fraction
+				else travelTime * (1 - tile.fraction))
+			if time > elapsed then
+				break
+			end
+			local seed = nextTile
+			nextTile += direction
+			if elapsed - time < holdTime then
+				budget -= 1
+				local hit = Workspace:Raycast(origin + tile.offset, floorRay, ray)
+				if hit and hit.Normal.Y > .48 then
+					paint(hit, Vector3.xAxis, tile.size, tile.size, time, seed, false)
+				end
+			end
+		end
+		return budget
+	end
+
 	local function gather(camera, budget)
 		local pixels = camera.ViewportSize
 		while viewProbe < viewColumns * viewRows and budget > 0 do
@@ -2080,20 +2128,18 @@ local function makeRoomSweep()
 
 	local function probeRow(row, rowIndex, probe)
 		local center = origin + forward * row.depth
-		local span = row.columns * 2 + 1
-		local upper = if hasCeiling then span else 0
-		if probe <= span + upper then
-			local ceiling = probe > span
-			local column = (probe - 1) % span - row.columns
+		local span = if hasCeiling then row.columns * 2 + 1 else 0
+		if probe <= span then
+			local column = probe - 1 - row.columns
 			local anchor = center + side * (column * row.width)
-			local hit = Workspace:Raycast(anchor + up * .7, up * (if ceiling then 26 else -25), ray)
-			if hit and (if ceiling then hit.Normal.Y < -.48 else hit.Normal.Y > .48) then
+			local hit = Workspace:Raycast(anchor + up * .7, up * 26, ray)
+			if hit and hit.Normal.Y < -.48 then
 				local seed = rowIndex * 7 + column * 3
 				local time = row.at + math.abs(column) * .003 + seed % 3 * .006
 				paint(hit, side, row.width - .025, row.step - .025, time, seed, seed % 4 == 0)
 			end
 		else
-			local slot = probe - span - upper - 1
+			local slot = probe - span - 1
 			local height = wallHeights[slot % #wallHeights + 1]
 			local sideways = if slot < #wallHeights then -1 else 1
 			local hit = Workspace:Raycast(center + up * height, side * (sideways * row.sideRange), ray)
@@ -2102,7 +2148,7 @@ local function makeRoomSweep()
 				paint(hit, up, 3.42, row.step, row.at + seed % 4 * .006, seed, seed % 4 == 0)
 			end
 		end
-		return span + upper + 2 * #wallHeights
+		return span + 2 * #wallHeights
 	end
 
 	local function update(camera, position, dt)
@@ -2131,23 +2177,24 @@ local function makeRoomSweep()
 			local ceiling = Workspace:Raycast(position, up * 24, ray)
 			hasCeiling = ceiling and ceiling.Normal.Y < -.48
 			elapsed, nextRow, nextProbe, viewProbe = 0, 1, 1, 0
+			nextTile = if direction > 0 then 1 else #floorTiles
 		end
 		if not origin then
 			return false
 		end
 
 		elapsed += dt
-		local budget = rayLimit
+		local budget = paintFloor(rayLimit)
 		if viewProbe < viewColumns * viewRows then
-			local remaining = gather(camera, math.min(budget, 14))
-			budget -= 14 - remaining
+			local allowance = math.min(budget, 14)
+			budget -= allowance - gather(camera, allowance)
 			if viewProbe == viewColumns * viewRows then
 				prepareRows()
-			else
-				return true
 			end
 		end
-		paintFront()
+		if viewProbe == viewColumns * viewRows then
+			paintFront()
+		end
 		while nextRow <= #rows and rows[nextRow].at <= elapsed and budget > 0 do
 			local row = rows[nextRow]
 			if elapsed - row.at >= holdTime then
@@ -2174,7 +2221,8 @@ local function makeRoomSweep()
 				item.part.Transparency = 1 - item.opacity * rise * fall^2
 			end
 		end
-		if nextRow > #rows and #frontHits == 0 and #active == 0 then
+		if not floorTiles[nextTile] and viewProbe == viewColumns * viewRows
+			and nextRow > #rows and #frontHits == 0 and #active == 0 then
 			stop()
 			return false
 		end
