@@ -2672,8 +2672,9 @@ local function stopScan(restoreCharacter)
 end
 
 local function makeReconstruction()
-	local animation = create("Animation", nil, { AnimationId = "rbxassetid://15957374019" })
-	local watchedCharacter, death, deathConnection, activeTrack
+	local animation = create("Animation", nil, { AnimationId = "rbxassetid://12772543293" })
+	local cameraStep = "ConnorVisionRespawnCamera"
+	local watchedCharacter, death, deathConnection, activeTrack, cameraHold
 	local destroyed = false
 
 	local function clearTrack()
@@ -2685,11 +2686,54 @@ local function makeReconstruction()
 		end
 	end
 
-	local function returnToDeathSpot(character, humanoid, root, previousDeath)
-		local position, facing = previousDeath.position, previousDeath.facing
-		if not position or position.Y <= Workspace.FallenPartsDestroyHeight + 8 then
+	local function releaseCamera(hold)
+		if not hold or cameraHold ~= hold then
 			return
 		end
+		cameraHold = nil
+		RunService:UnbindFromRenderStep(cameraStep)
+		local camera = hold.camera
+		if camera.Parent and camera.CameraType == Enum.CameraType.Scriptable then
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				camera.CameraSubject = humanoid
+			end
+			camera.CameraType = hold.cameraType
+		end
+	end
+
+	local function holdCamera(character, previousDeath)
+		local camera = Workspace.CurrentCamera
+		local position = previousDeath.position
+		if not camera or not previousDeath.view or not position or position.Y <= Workspace.FallenPartsDestroyHeight + 8 then
+			return nil
+		end
+		local hold = { camera = camera, cameraType = camera.CameraType, expires = os.clock() + 2.5 }
+		cameraHold = hold
+		local function updateCamera()
+			if player.Character ~= character or Workspace.CurrentCamera ~= camera or os.clock() >= hold.expires then
+				releaseCamera(hold)
+				return
+			end
+			if camera.CameraType ~= Enum.CameraType.Scriptable then
+				camera.CameraType = Enum.CameraType.Scriptable
+			end
+			camera.CFrame = previousDeath.view
+			camera.Focus = previousDeath.focus
+		end
+		RunService:BindToRenderStep(cameraStep, Enum.RenderPriority.Camera.Value + 2, updateCamera)
+		updateCamera()
+		return hold
+	end
+
+	local function canReturn(hold, character, humanoid, root)
+		return cameraHold == hold and os.clock() < hold.expires and Workspace.CurrentCamera == hold.camera
+			and player.Character == character and aliveRoot(character) == root and not root.Anchored and not humanoid.SeatPart
+	end
+
+	local function returnToDeathSpot(hold, character, humanoid, root, previousDeath)
+		local position, facing = previousDeath.position, previousDeath.facing
 		local ray = RaycastParams.new()
 		ray.FilterType = Enum.RaycastFilterType.Exclude
 		ray.FilterDescendantsInstances = { character, previousDeath.character }
@@ -2699,14 +2743,13 @@ local function makeReconstruction()
 		local ground = Workspace:Raycast(rayStart, rayDirection, ray)
 		if not ground and Workspace.StreamingEnabled then
 			pcall(player.RequestStreamAroundAsync, player, position, 1)
-			if destroyed or player.Character ~= character or aliveRoot(character) ~= root
-				or root.Anchored or humanoid.SeatPart then
-				return
+			if not canReturn(hold, character, humanoid, root) then
+				return false
 			end
 			ground = Workspace:Raycast(rayStart, rayDirection, ray)
 		end
 		if not ground or ground.Position.Y <= Workspace.FallenPartsDestroyHeight + 8 or ground.Normal.Y < .5 then
-			return
+			return false
 		end
 
 		local height = root.Size.Y / 2 + humanoid.HipHeight
@@ -2724,16 +2767,21 @@ local function makeReconstruction()
 			if scanEnabled then
 				resetScanOrigin()
 			end
+			return true
 		end
+		return false
 	end
 
-	local function reconstruct(character, humanoid, previousDeath)
-		-- CharacterAdded can run before the game places the new character.
-		task.wait(.25)
+	local function reconstruct(hold, character, humanoid, previousDeath)
+		if hold then
+			-- Keep TSB's spawn setup off camera while the new rig settles.
+			task.wait(.25)
+		end
 		local deadline = os.clock() + 4
 		local root
 		repeat
 			if destroyed or player.Character ~= character or humanoid.Health <= 0 then
+				releaseCamera(hold)
 				return
 			end
 			root = aliveRoot(character)
@@ -2744,9 +2792,21 @@ local function makeReconstruction()
 			RunService.Heartbeat:Wait()
 		until os.clock() >= deadline
 		if not root then
+			releaseCamera(hold)
 			return
 		end
-		returnToDeathSpot(character, humanoid, root, previousDeath)
+		if hold then
+			-- Let the game place the new rig before moving it, then reveal it on the next frame.
+			RunService.Heartbeat:Wait()
+			if canReturn(hold, character, humanoid, root)
+				and returnToDeathSpot(hold, character, humanoid, root, previousDeath) then
+				RunService.Heartbeat:Wait()
+			end
+			releaseCamera(hold)
+		end
+		if destroyed or player.Character ~= character or aliveRoot(character) ~= root then
+			return
+		end
 
 		local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 2)
 		if destroyed or player.Character ~= character or aliveRoot(character) ~= root
@@ -2773,6 +2833,7 @@ local function makeReconstruction()
 			return
 		end
 		watchedCharacter = character
+		releaseCamera(cameraHold)
 		if deathConnection then
 			deathConnection:Disconnect()
 			deathConnection = nil
@@ -2780,8 +2841,10 @@ local function makeReconstruction()
 		clearTrack()
 		local previousDeath = death
 		death = nil
+		local hold = previousDeath and holdCamera(character, previousDeath)
 		local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 4)
 		if destroyed or player.Character ~= character or not humanoid or not humanoid:IsA("Humanoid") then
+			releaseCamera(hold)
 			return
 		end
 		deathConnection = humanoid.Died:Once(function()
@@ -2790,6 +2853,11 @@ local function makeReconstruction()
 			end
 			local root = humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
 			death = { character = character }
+			local camera = Workspace.CurrentCamera
+			if camera then
+				death.view = camera.CFrame
+				death.focus = camera.Focus
+			end
 			if root and root:IsA("BasePart") then
 				local direction = root.CFrame.LookVector
 				local facing = Vector3.new(direction.X, 0, direction.Z)
@@ -2798,7 +2866,7 @@ local function makeReconstruction()
 			end
 		end)
 		if previousDeath then
-			reconstruct(character, humanoid, previousDeath)
+			reconstruct(hold, character, humanoid, previousDeath)
 		end
 	end
 
@@ -2808,6 +2876,7 @@ local function makeReconstruction()
 	end
 	return function()
 		destroyed = true
+		releaseCamera(cameraHold)
 		addedConnection:Disconnect()
 		if deathConnection then
 			deathConnection:Disconnect()
