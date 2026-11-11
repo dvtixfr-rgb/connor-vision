@@ -718,7 +718,7 @@ local function makeRemoteScan()
 	}
 end
 
-local remoteScan = if baseplateMode then makeRemoteScan() else nil
+local remoteScan = if baseplateMode or battlegroundsMode then makeRemoteScan() else nil
 
 local function makeMissionBanner()
 	local height = 64
