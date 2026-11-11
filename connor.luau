@@ -1,5 +1,6 @@
 -- Connor Vision
--- Q toggles analysis. E hides or shows flag status during analysis in place 2336379484.
+-- Q toggles analysis. In The Strongest Battlegrounds, tap right-click instead.
+-- E hides or shows flag status during analysis in place 2336379484.
 -- In Studio, use a LocalScript in StarterPlayerScripts.
 
 local Players = game:GetService("Players")
@@ -2745,28 +2746,38 @@ local function unwatchPlayer(candidate)
 	playerConnections[candidate] = nil
 end
 
+local function toggleScan()
+	if scanEnabled then
+		local canReverse = scanAge >= .12 and gridDatum ~= nil
+		exitStrength = strength
+		stopScan()
+		if canReverse then
+			exitAge = 0
+			roomSweep.start(true)
+		end
+	else
+		scanEnabled = true
+		resetScanOrigin()
+		if remoteScan then
+			remoteScan.start()
+		end
+	end
+	playScanSound(scanEnabled)
+end
+
+local rightClickStartedAt
+local rightClickTravel = 0
+
 local function onInputBegan(input, handled)
 	if handled or UserInputService:GetFocusedTextBox() then
 		return
 	end
 
-	if input.KeyCode == Enum.KeyCode.Q then
-		if scanEnabled then
-			local canReverse = scanAge >= .12 and gridDatum ~= nil
-			exitStrength = strength
-			stopScan()
-			if canReverse then
-				exitAge = 0
-				roomSweep.start(true)
-			end
-		else
-			scanEnabled = true
-			resetScanOrigin()
-			if remoteScan then
-				remoteScan.start()
-			end
-		end
-		playScanSound(scanEnabled)
+	if battlegroundsMode and input.UserInputType == Enum.UserInputType.MouseButton2 then
+		rightClickStartedAt = os.clock()
+		rightClickTravel = 0
+	elseif not battlegroundsMode and input.KeyCode == Enum.KeyCode.Q then
+		toggleScan()
 	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and not scanStarting and flagStatus then
 		local camera = Workspace.CurrentCamera
 		if camera and aliveRoot(player.Character) then
@@ -2786,6 +2797,32 @@ local connections = {
 		end
 	end),
 }
+
+if battlegroundsMode then
+	-- A tap toggles analysis. Holding or dragging still controls the camera.
+	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+		if rightClickStartedAt and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Delta
+			rightClickTravel += math.abs(delta.X) + math.abs(delta.Y)
+			if rightClickTravel > 6 then
+				rightClickStartedAt = nil
+			end
+		end
+	end))
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input, handled)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton2 then
+			return
+		end
+		local startedAt = rightClickStartedAt
+		rightClickStartedAt = nil
+		if startedAt and os.clock() - startedAt <= .35 and not handled and not UserInputService:GetFocusedTextBox() then
+			toggleScan()
+		end
+	end))
+	table.insert(connections, UserInputService.WindowFocusReleased:Connect(function()
+		rightClickStartedAt = nil
+	end))
+end
 
 for _, candidate in Players:GetPlayers() do
 	watchPlayer(candidate)
