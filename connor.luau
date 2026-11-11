@@ -2832,9 +2832,7 @@ local function makeReconstruction(animationId)
 		if destroyed or player.Character ~= character or aliveRoot(character) ~= root then
 			return
 		end
-		if baseplateMode then
-			task.defer(announceReboot, character)
-		end
+		task.defer(announceReboot, character)
 		if not animation then
 			return
 		end
