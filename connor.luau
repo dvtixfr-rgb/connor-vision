@@ -684,6 +684,13 @@ local function makeRemoteScan()
 	return {
 		start = start,
 		stop = stop,
+		parkedOrigin = function(character)
+			local current = session
+			if current and current.character == character and nearPlatform(current) then
+				return current.origin
+			end
+			return nil
+		end,
 		update = function(camera, root)
 			local current = session
 			if not current then
@@ -2616,6 +2623,154 @@ local function stopScan(restoreCharacter)
 	hideEnemies()
 end
 
+local function makeReconstruction()
+	local animation = create("Animation", nil, { AnimationId = "rbxassetid://15957374019" })
+	local watchedCharacter, death, deathConnection, activeTrack
+	local destroyed = false
+
+	local function clearTrack()
+		local track = activeTrack
+		activeTrack = nil
+		if track then
+			track:Stop(0)
+			track:Destroy()
+		end
+	end
+
+	local function returnToDeathSpot(character, humanoid, root, previousDeath)
+		local position, facing = previousDeath.position, previousDeath.facing
+		if not position or position.Y <= Workspace.FallenPartsDestroyHeight + 8 then
+			return
+		end
+		local ray = RaycastParams.new()
+		ray.FilterType = Enum.RaycastFilterType.Exclude
+		ray.FilterDescendantsInstances = { character, previousDeath.character }
+		ray.RespectCanCollide = true
+		local rayStart = position + Vector3.yAxis * 4
+		local rayDirection = -Vector3.yAxis * 20
+		local ground = Workspace:Raycast(rayStart, rayDirection, ray)
+		if not ground and Workspace.StreamingEnabled then
+			pcall(player.RequestStreamAroundAsync, player, position, 1)
+			if destroyed or player.Character ~= character or aliveRoot(character) ~= root
+				or root.Anchored or humanoid.SeatPart then
+				return
+			end
+			ground = Workspace:Raycast(rayStart, rayDirection, ray)
+		end
+		if not ground or ground.Position.Y <= Workspace.FallenPartsDestroyHeight + 8 or ground.Normal.Y < .5 then
+			return
+		end
+
+		local height = root.Size.Y / 2 + humanoid.HipHeight
+		if humanoid.RigType == Enum.HumanoidRigType.R6 then
+			local leg = character:FindFirstChild("Left Leg")
+			height += if leg and leg:IsA("BasePart") then leg.Size.Y else 2
+		end
+		local landing = ground.Position + Vector3.yAxis * (height + .1)
+		local rootToPivot = root.CFrame:ToObjectSpace(character:GetPivot())
+		local target = CFrame.lookAt(landing, landing + facing) * rootToPivot
+		if pcall(character.PivotTo, character, target) then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			remoteScan.stop(false)
+			if scanEnabled then
+				resetScanOrigin()
+			end
+		end
+	end
+
+	local function reconstruct(character, humanoid, previousDeath)
+		-- CharacterAdded can run before the game places the new character.
+		task.wait(.25)
+		local deadline = os.clock() + 4
+		local root
+		repeat
+			if destroyed or player.Character ~= character or humanoid.Health <= 0 then
+				return
+			end
+			root = aliveRoot(character)
+			if root and humanoid.RootPart == root and not root.Anchored and not humanoid.SeatPart then
+				break
+			end
+			root = nil
+			RunService.Heartbeat:Wait()
+		until os.clock() >= deadline
+		if not root then
+			return
+		end
+		returnToDeathSpot(character, humanoid, root, previousDeath)
+
+		local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 2)
+		if destroyed or player.Character ~= character or aliveRoot(character) ~= root
+			or not animator or not animator:IsA("Animator") then
+			return
+		end
+		local loaded, track = pcall(animator.LoadAnimation, animator, animation)
+		if loaded then
+			activeTrack = track
+			track.Priority = Enum.AnimationPriority.Action4
+			track.Looped = false
+			track.Ended:Once(function()
+				if activeTrack == track then
+					activeTrack = nil
+					track:Destroy()
+				end
+			end)
+			track:Play(.08)
+		end
+	end
+
+	local function watchCharacter(character)
+		if destroyed or player.Character ~= character or watchedCharacter == character then
+			return
+		end
+		watchedCharacter = character
+		if deathConnection then
+			deathConnection:Disconnect()
+			deathConnection = nil
+		end
+		clearTrack()
+		local previousDeath = death
+		death = nil
+		local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 4)
+		if destroyed or player.Character ~= character or not humanoid or not humanoid:IsA("Humanoid") then
+			return
+		end
+		deathConnection = humanoid.Died:Once(function()
+			if destroyed or watchedCharacter ~= character then
+				return
+			end
+			local root = humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
+			death = { character = character }
+			if root and root:IsA("BasePart") then
+				local direction = root.CFrame.LookVector
+				local facing = Vector3.new(direction.X, 0, direction.Z)
+				death.position = remoteScan.parkedOrigin(character) or root.Position
+				death.facing = if facing.Magnitude > .01 then facing.Unit else -Vector3.zAxis
+			end
+		end)
+		if previousDeath then
+			reconstruct(character, humanoid, previousDeath)
+		end
+	end
+
+	local addedConnection = player.CharacterAdded:Connect(watchCharacter)
+	if player.Character then
+		task.defer(watchCharacter, player.Character)
+	end
+	return function()
+		destroyed = true
+		addedConnection:Disconnect()
+		if deathConnection then
+			deathConnection:Disconnect()
+		end
+		clearTrack()
+		animation:Destroy()
+	end
+end
+
+local stopReconstruction = if battlegroundsMode then makeReconstruction() else nil
+
 local function render(dt)
 	if baseplateResults then
 		baseplateResults.update()
@@ -2854,6 +3009,9 @@ local function cleanup()
 	end
 
 	RunService:UnbindFromRenderStep(RENDER_STEP)
+	if stopReconstruction then
+		stopReconstruction()
+	end
 	if remoteScan then
 		remoteScan.destroy()
 	end
