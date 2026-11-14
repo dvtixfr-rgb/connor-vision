@@ -514,6 +514,25 @@ local function makeRemoteScan()
 		current.mouseLock = nil
 	end
 
+	local function applyView(current, camera)
+		local offset = current.previewOffset
+		if offset then
+			local pullback = math.max(0, 7 - (current.view.Position - current.focus.Position).Magnitude)
+			local view = current.view + offset - current.view.LookVector * pullback
+			local focus = current.focus + offset
+			local eyeOffset = view.Position - focus.Position
+			local hit = if eyeOffset.Magnitude > .001 then Workspace:Raycast(focus.Position, eyeOffset, current.previewRay) else nil
+			if hit then
+				view = view - view.Position + hit.Position - eyeOffset.Unit * .25
+			end
+			camera.CFrame = view
+			camera.Focus = focus
+		else
+			camera.CFrame = current.view
+			camera.Focus = current.focus
+		end
+	end
+
 	local function updateView(current, camera)
 		if not current.lookPivot then
 			local head = current.standIn:FindFirstChild("Head")
@@ -525,7 +544,7 @@ local function makeRemoteScan()
 			current.lookPivot = if firstPerson then current.view.Position else pivot
 			current.firstPerson = firstPerson
 			current.freeLook = firstPerson or current.mouseBehavior == Enum.MouseBehavior.LockCenter
-			if firstPerson then
+			if firstPerson and not current.previewOffset then
 				for _, item in current.standIn:GetDescendants() do
 					if item:IsA("BasePart") and (item == head or item:FindFirstAncestorOfClass("Accessory")) then
 						item.LocalTransparencyModifier = 1
@@ -573,8 +592,7 @@ local function makeRemoteScan()
 			releaseMouse(current)
 		end
 
-		camera.CFrame = current.view
-		camera.Focus = current.focus
+		applyView(current, camera)
 	end
 
 	local function stop(restoreCharacter)
@@ -585,11 +603,9 @@ local function makeRemoteScan()
 		session = nil
 		releaseMouse(current)
 
-		local restored = false
 		if restoreCharacter and player.Character == current.character
 			and aliveRoot(current.character) == current.root and nearPlatform(current) then
-			restored = pcall(current.character.PivotTo, current.character, current.pivot)
-			if restored then
+			if pcall(current.character.PivotTo, current.character, current.pivot) then
 				current.root.AssemblyLinearVelocity = Vector3.zero
 				current.root.AssemblyAngularVelocity = Vector3.zero
 			end
@@ -609,7 +625,6 @@ local function makeRemoteScan()
 		end
 		current.standIn:Destroy()
 		platform.Parent = nil
-		return restored
 	end
 
 	local function start()
@@ -634,7 +649,8 @@ local function makeRemoteScan()
 			return
 		end
 		local standInHumanoid = standIn:FindFirstChildOfClass("Humanoid")
-		if not standInHumanoid or not standIn:FindFirstChild("HumanoidRootPart") then
+		local standInRoot = standIn:FindFirstChild("HumanoidRootPart")
+		if not standInHumanoid or not standInRoot or not standInRoot:IsA("BasePart") then
 			standIn:Destroy()
 			return
 		end
@@ -658,7 +674,9 @@ local function makeRemoteScan()
 		session = {
 			character = character, root = root, humanoid = humanoid, pivot = pivot, origin = origin,
 			landing = landing,
-			standIn = standIn, standInHumanoid = standInHumanoid, camera = camera,
+			standIn = standIn, standInRoot = standInRoot, standInHumanoid = standInHumanoid, camera = camera,
+			rootToPivot = root.CFrame:ToObjectSpace(pivot),
+			standInRootToPivot = standInRoot.CFrame:ToObjectSpace(standIn:GetPivot()),
 			cameraSubject = camera.CameraSubject, cameraType = camera.CameraType,
 			cameraLocked = camera.CameraType == Enum.CameraType.Scriptable,
 			view = camera.CFrame, focus = camera.Focus, mouseBehavior = UserInputService.MouseBehavior,
@@ -692,6 +710,66 @@ local function makeRemoteScan()
 			if current and current.character == character and current.standIn.Parent and nearPlatform(current) then
 				return current.standIn, current.origin
 			end
+		end,
+		followPreview = function(standIn, position)
+			local current = session
+			if not current or current.standIn ~= standIn or Workspace.CurrentCamera ~= current.camera then
+				return
+			end
+			local camera = current.camera
+			if position then
+				if not current.previewRay then
+					local ray = RaycastParams.new()
+					ray.FilterType = Enum.RaycastFilterType.Exclude
+					ray.FilterDescendantsInstances = { current.character, standIn, platform }
+					ray.IgnoreWater = true
+					ray.RespectCanCollide = true
+					current.previewRay = ray
+				end
+				if not current.cameraLocked then
+					current.cameraLocked = true
+					current.previewControlledCamera = true
+					camera.CameraType = Enum.CameraType.Scriptable
+				end
+				current.previewOffset = position - current.origin
+			elseif current.previewOffset then
+				current.previewOffset = nil
+				if current.previewControlledCamera then
+					current.previewControlledCamera = nil
+					current.cameraLocked = false
+					current.lookPivot = nil
+					releaseMouse(current)
+					camera.CameraSubject = current.standInHumanoid
+					camera.CameraType = current.cameraType
+				end
+			else
+				return
+			end
+			applyView(current, camera)
+		end,
+		moveStandIn = function(standIn, position, direction, animated)
+			local current = session
+			if not current or current.standIn ~= standIn or not nearPlatform(current) then
+				return false
+			end
+			local offset = position - current.origin
+			local pose = CFrame.lookAt(position, position + direction)
+			current.pivot = pose * current.rootToPivot
+			if animated then
+				current.standInRoot.CFrame = pose
+			else
+				standIn:PivotTo(pose * current.standInRootToPivot)
+			end
+			current.origin = position
+			if current.cameraLocked then
+				current.view += offset
+				current.focus += offset
+				if current.lookPivot then
+					current.lookPivot += offset
+				end
+				applyView(current, current.camera)
+			end
+			return true
 		end,
 		parkedOrigin = function(character)
 			local current = session
@@ -2760,6 +2838,7 @@ local function makePreconstruction()
 
 	local function clearPlan()
 		if plan then
+			remoteScan.followPreview(plan.standIn, nil)
 			if plan.track then
 				plan.track:Destroy()
 			end
@@ -2804,6 +2883,26 @@ local function makePreconstruction()
 			end
 		end
 		return landing
+	end
+
+	local function loadWalk(model, humanoid, root)
+		local walk = create("Animation", model, {
+			AnimationId = if humanoid.RigType == Enum.HumanoidRigType.R6 then "rbxassetid://180426354" else "rbxassetid://507777826",
+		})
+		local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+		local loaded, track = pcall(animator.LoadAnimation, animator, walk)
+		if not loaded then
+			walk:Destroy()
+			return nil
+		end
+		track.Looped = true
+		track.Priority = Enum.AnimationPriority.Movement
+		for _, part in model:GetDescendants() do
+			if part:IsA("BasePart") and part ~= root and not part:IsA("Seat") and not part:IsA("VehicleSeat") then
+				part.Anchored = false
+			end
+		end
+		return track, walk
 	end
 
 	local function begin(root, humanoid, standIn, origin)
@@ -2860,31 +2959,13 @@ local function makePreconstruction()
 			OutlineColor = outline, OutlineTransparency = .28,
 			FillColor = Color3.fromRGB(68, 59, 37), FillTransparency = .97,
 		})
-		local walk = create("Animation", ghost, {
-			AnimationId = if humanoid.RigType == Enum.HumanoidRigType.R6 then "rbxassetid://180426354" else "rbxassetid://507777826",
-		})
 		local rootToPivot = ghostRoot.CFrame:ToObjectSpace(ghost:GetPivot())
 		-- The replica starts hidden inside the stationary stand-in, then takes its first step.
 		ghost.Parent = Workspace
-		local track
-		if ghostHumanoid then
-			local animator = ghostHumanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", ghostHumanoid)
-			local loaded, result = pcall(animator.LoadAnimation, animator, walk)
-			if loaded then
-				track = result
-				track.Looped = true
-				track.Priority = Enum.AnimationPriority.Movement
-				-- Animators need an unanchored body attached to an anchored root.
-				for _, part in ghost:GetDescendants() do
-					if part:IsA("BasePart") and part ~= ghostRoot and not part:IsA("Seat") and not part:IsA("VehicleSeat") then
-						part.Anchored = false
-					end
-				end
-			end
-		end
+		local track = ghostHumanoid and loadWalk(ghost, ghostHumanoid, ghostRoot)
 		local height = origin.Y - ground.Position.Y
 		plan = {
-			character = player.Character, root = root, humanoid = humanoid, standIn = standIn,
+			humanoid = humanoid, standIn = standIn,
 			position = origin, displayPosition = origin, facing = flat(ghostRoot.CFrame.LookVector), height = height, ray = ray,
 			body = Vector3.new(math.max(1.8, root.Size.X * .94), math.max(2.4, height * 1.45), math.max(1.5, root.Size.Z)),
 			ghost = ghost, ghostRoot = ghostRoot, rootToPivot = rootToPivot, highlight = highlight, ghostParts = ghostParts,
@@ -2997,6 +3078,9 @@ local function makePreconstruction()
 				current.ghost:PivotTo(pose * current.rootToPivot)
 			end
 		end
+		if current.distance > 0 then
+			remoteScan.followPreview(current.standIn, current.displayPosition)
+		end
 		local torso = current.torso
 		local center = if torso and torso:IsA("BasePart") and current.distance > 0
 			then torso.Position + Vector3.yAxis * (torso.Size.Y * .06)
@@ -3023,86 +3107,49 @@ local function makePreconstruction()
 			else "RELEASE E   EXECUTE"
 	end
 
-	local function finishPlayback(resume)
+	local function finishPlayback()
 		local current = playback
 		playback = nil
-		if not current then
-			return
-		end
-		local root, humanoid = aliveRoot(current.character)
-		if player.Character == current.character and root == current.root and humanoid then
-			humanoid:Move(Vector3.zero, false)
-			if resume and scanEnabled then
-				remoteScan.start()
-			end
+		if current and current.track then
+			current.track:Stop(.1)
+			current.track:Destroy()
+			current.animation:Destroy()
 		end
 	end
 
-	local function updatePlayback(current, root, dt)
-		local humanoid = current.humanoid
-		if root ~= current.root or player.Character ~= current.character or root.Anchored or humanoid.SeatPart then
-			finishPlayback(false)
+	local function updatePlayback(current, standIn, dt)
+		if standIn ~= current.standIn or current.humanoid.Health < current.health then
+			finishPlayback()
 			return
 		end
-		local endpoint = current.points[current.index]
-		while endpoint do
-			local remaining = flat(endpoint - root.Position)
-			local leg = flat(endpoint - current.points[current.index - 1])
-			local more = current.points[current.index + 1]
-			if remaining.Magnitude > (if more then .52 else .23) and (not more
-				or remaining:Dot(leg) > 0 or remaining.Magnitude > 1.25) then
-				break
-			end
-			current.index += 1
-			current.bestDistance = math.huge
-			endpoint = current.points[current.index]
-		end
-		if not endpoint then
-			finishPlayback(true)
-			return
-		end
-		local delta = flat(endpoint - root.Position)
-		local targetDistance = (endpoint - root.Position).Magnitude
-		if targetDistance > 3 then
-			finishPlayback(false)
-			return
-		end
-		current.timeout -= dt
-		if targetDistance < current.bestDistance - .08 then
-			current.bestDistance = targetDistance
-			current.stall = .55
-		else
-			current.stall -= dt
-		end
-		current.probeIn -= dt
-		if current.timeout <= 0 or current.stall <= 0 or humanoid.WalkSpeed <= 0 or humanoid.Health < current.health then
-			finishPlayback(true)
-			return
-		end
-		if current.probeIn <= 0 then
-			current.probeIn = .06
-			local lookAhead = endpoint
-			local nextIndex = current.index + 1
-			local leg = flat(endpoint - current.points[current.index - 1]).Unit
-			while current.points[nextIndex] and (lookAhead - root.Position).Magnitude < 1.8 do
-				local following = current.points[nextIndex]
-				if flat(following - lookAhead).Unit:Dot(leg) < .995 then
-					break
-				end
-				lookAhead = following
-				nextIndex += 1
-			end
-			if not walkCheck(current, root.Position, lookAhead) then
-				finishPlayback(true)
+		local budget = math.min(dt, .075) * current.speed
+		while budget > .001 do
+			local endpoint = current.points[current.index]
+			if not endpoint then
+				finishPlayback()
 				return
 			end
+			local delta = flat(endpoint - current.position)
+			local distance = delta.Magnitude
+			local traveled = math.min(budget, distance)
+			if distance > .001 then
+				local direction = delta.Unit
+				local landing = walkCheck(current, current.position, current.position + direction * traveled)
+				if not landing or not remoteScan.moveStandIn(standIn, landing, direction, current.track ~= nil) then
+					finishPlayback()
+					return
+				end
+				current.position = landing
+			end
+			budget -= traveled
+			if distance - traveled <= .001 then
+				current.index += 1
+			end
 		end
-		local following = current.points[current.index + 1]
-		if following and flat(following - endpoint).Unit:Dot(delta.Unit) > .96 then
-			delta = flat(following - root.Position)
+		if not current.points[current.index] then
+			finishPlayback()
+			return
 		end
-		local pace = if following then 1 else math.min(1, delta.Magnitude / (math.max(humanoid.WalkSpeed, 1) * math.max(dt, .02)))
-		humanoid:Move(delta.Unit * pace, false)
 		title.Text = "EXECUTE"
 		prompt.Text = "FOLLOWING ROUTE"
 		drawProgress((current.index - 1) / #current.points, white)
@@ -3112,12 +3159,24 @@ local function makePreconstruction()
 		local current = plan
 		local stillParked = current and remoteScan.predictionSource(player.Character) == current.standIn
 		clearPlan()
-		if stillParked and current.distance >= step and remoteScan.stop(true) then
-			current.index, current.probeIn = 2, 0
-			current.bestDistance, current.stall = math.huge, .55
-			current.timeout = math.min(6, current.distance / math.max(8, current.humanoid.WalkSpeed) + 1.2)
-			current.health = current.humanoid.Health
-			playback = current
+		if not stillParked or current.distance < step then
+			return
+		end
+		local standIn = current.standIn
+		local copyHumanoid = standIn:FindFirstChildOfClass("Humanoid")
+		local copyRoot = standIn:FindFirstChild("HumanoidRootPart")
+		local track, animation
+		if copyHumanoid and copyRoot then
+			track, animation = loadWalk(standIn, copyHumanoid, copyRoot)
+		end
+		local speed = math.clamp(current.humanoid.WalkSpeed, 8, 24)
+		playback = {
+			standIn = standIn, humanoid = current.humanoid, health = current.humanoid.Health,
+			points = current.points, position = current.points[1], index = 2, speed = speed,
+			ray = current.ray, body = current.body, height = current.height, track = track, animation = animation,
+		}
+		if track then
+			track:Play(.06, 1, speed / 16)
 		end
 	end
 
@@ -3129,7 +3188,7 @@ local function makePreconstruction()
 		key = function(key)
 			if key == keys.Backspace or (key == keys.E and playback) then
 				clearPlan()
-				finishPlayback(true)
+				finishPlayback()
 			elseif key == keys.E and not plan and inputAvailable() then
 				local character = player.Character
 				local standIn, origin = remoteScan.predictionSource(character)
@@ -3160,12 +3219,12 @@ local function makePreconstruction()
 		cancelInput = function()
 			clearPlan()
 			hint.Text = "HOLD E   PRECONSTRUCT"
-			finishPlayback(true)
+			finishPlayback()
 		end,
-		update = function(camera, root, dt)
+		update = function(camera, dt)
 			local standIn = remoteScan.predictionSource(player.Character)
 			if playback then
-				updatePlayback(playback, root, dt)
+				updatePlayback(playback, standIn, dt)
 			elseif plan then
 				if standIn == plan.standIn and inputAvailable() then
 					title.Text = "PRECONSTRUCT"
@@ -3183,13 +3242,13 @@ local function makePreconstruction()
 		end,
 		stop = function()
 			clearPlan()
-			finishPlayback(false)
+			finishPlayback()
 			panel.Visible = false
 			hint.Visible = false
 		end,
 		destroy = function()
 			clearPlan()
-			finishPlayback(false)
+			finishPlayback()
 			route:Destroy()
 		end,
 	}
@@ -3489,7 +3548,11 @@ local function render(dt)
 		grade.Enabled = false
 		return
 	end
-	local previewing = preconstruction and scanEnabled and preconstruction.update(camera, root, dt)
+	local previewing = false
+	if preconstruction and scanEnabled then
+		previewing = preconstruction.update(camera, dt)
+		position = remoteScan.parkedOrigin(character) or position
+	end
 
 	local pixels = camera.ViewportSize
 	if lastPixels ~= pixels then
