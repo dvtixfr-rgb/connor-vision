@@ -674,7 +674,7 @@ local function makeRemoteScan()
 		session = {
 			character = character, root = root, humanoid = humanoid, pivot = pivot, origin = origin,
 			landing = landing,
-			standIn = standIn, standInHumanoid = standInHumanoid, camera = camera,
+			standIn = standIn, standInRoot = standInRoot, standInHumanoid = standInHumanoid, camera = camera,
 			rootToPivot = root.CFrame:ToObjectSpace(pivot),
 			standInRootToPivot = standInRoot.CFrame:ToObjectSpace(standIn:GetPivot()),
 			cameraSubject = camera.CameraSubject, cameraType = camera.CameraType,
@@ -747,22 +747,26 @@ local function makeRemoteScan()
 			end
 			applyView(current, camera)
 		end,
-		moveStandIn = function(standIn, position, direction)
+		moveStandIn = function(standIn, position, direction, animated)
 			local current = session
 			if not current or current.standIn ~= standIn or not nearPlatform(current) then
 				return false
 			end
 			local offset = position - current.origin
 			local pose = CFrame.lookAt(position, position + direction)
-			standIn:PivotTo(pose * current.standInRootToPivot)
 			current.pivot = pose * current.rootToPivot
-			current.origin = position
-			current.view += offset
-			current.focus += offset
-			if current.lookPivot then
-				current.lookPivot += offset
+			if animated then
+				current.standInRoot.CFrame = pose
+			else
+				standIn:PivotTo(pose * current.standInRootToPivot)
 			end
-			if not current.previewOffset then
+			current.origin = position
+			if current.cameraLocked then
+				current.view += offset
+				current.focus += offset
+				if current.lookPivot then
+					current.lookPivot += offset
+				end
 				applyView(current, current.camera)
 			end
 			return true
@@ -2786,7 +2790,7 @@ local function makePreconstruction()
 		end
 		caption(badge, key, 0, 0, width, 19, 10)
 	end
-	caption(panel, "PRECONSTRUCT", 36, 0, 320, 17, 12)
+	local title = caption(panel, "PRECONSTRUCT", 36, 0, 320, 17, 12)
 	local prompt = caption(panel, "", 28, 32, 336, 21, 11)
 	keycap("E", 3, 24)
 	keycap("E", 365, 24)
@@ -2825,7 +2829,7 @@ local function makePreconstruction()
 	caption(release, "E", 0, 0, 22, 17, 10).TextColor3 = cyan
 	local route = create("Folder", Workspace, { Name = "ConnorPreconstructionRoute" })
 	local segments, waypoints = {}, {}
-	local plan
+	local plan, playback
 	local drawnTicks, drawnColor
 	local keys = Enum.KeyCode
 	local function flat(vector)
@@ -2841,7 +2845,6 @@ local function makePreconstruction()
 			plan.ghost:Destroy()
 			plan = nil
 		end
-		panel.Visible = false
 		marker.Visible = false
 		for _, segment in segments do
 			segment.Transparency = 1
@@ -2899,7 +2902,7 @@ local function makePreconstruction()
 				part.Anchored = false
 			end
 		end
-		return track
+		return track, walk
 	end
 
 	local function begin(root, humanoid, standIn, origin)
@@ -2962,7 +2965,7 @@ local function makePreconstruction()
 		local track = ghostHumanoid and loadWalk(ghost, ghostHumanoid, ghostRoot)
 		local height = origin.Y - ground.Position.Y
 		plan = {
-			standIn = standIn,
+			humanoid = humanoid, standIn = standIn,
 			position = origin, displayPosition = origin, facing = flat(ghostRoot.CFrame.LookVector), height = height, ray = ray,
 			body = Vector3.new(math.max(1.8, root.Size.X * .94), math.max(2.4, height * 1.45), math.max(1.5, root.Size.Z)),
 			ghost = ghost, ghostRoot = ghostRoot, rootToPivot = rootToPivot, highlight = highlight, ghostParts = ghostParts,
@@ -3104,24 +3107,77 @@ local function makePreconstruction()
 			else "RELEASE E   EXECUTE"
 	end
 
-	local function execute()
-		local current = plan
-		local standIn, origin = remoteScan.predictionSource(player.Character)
-		if standIn == current.standIn and aliveRoot(player.Character) then
-			local position, facing = origin, nil
-			for index = 2, #current.points do
-				local landing = walkCheck(current, position, current.points[index])
-				if not landing then
-					break
-				end
-				facing = flat(landing - position).Unit
-				position = landing
+	local function finishPlayback()
+		local current = playback
+		playback = nil
+		if current and current.track then
+			current.track:Stop(.1)
+			current.track:Destroy()
+			current.animation:Destroy()
+		end
+	end
+
+	local function updatePlayback(current, standIn, dt)
+		if standIn ~= current.standIn or current.humanoid.Health < current.health then
+			finishPlayback()
+			return
+		end
+		local budget = math.min(dt, .075) * current.speed
+		while budget > .001 do
+			local endpoint = current.points[current.index]
+			if not endpoint then
+				finishPlayback()
+				return
 			end
-			if facing then
-				remoteScan.moveStandIn(standIn, position, facing)
+			local delta = flat(endpoint - current.position)
+			local distance = delta.Magnitude
+			local traveled = math.min(budget, distance)
+			if distance > .001 then
+				local direction = delta.Unit
+				local landing = walkCheck(current, current.position, current.position + direction * traveled)
+				if not landing or not remoteScan.moveStandIn(standIn, landing, direction, current.track ~= nil) then
+					finishPlayback()
+					return
+				end
+				current.position = landing
+			end
+			budget -= traveled
+			if distance - traveled <= .001 then
+				current.index += 1
 			end
 		end
+		if not current.points[current.index] then
+			finishPlayback()
+			return
+		end
+		title.Text = "EXECUTE"
+		prompt.Text = "FOLLOWING ROUTE"
+		drawProgress((current.index - 1) / #current.points, white)
+	end
+
+	local function execute()
+		local current = plan
+		local stillParked = current and remoteScan.predictionSource(player.Character) == current.standIn
 		clearPlan()
+		if not stillParked or current.distance < step then
+			return
+		end
+		local standIn = current.standIn
+		local copyHumanoid = standIn:FindFirstChildOfClass("Humanoid")
+		local copyRoot = standIn:FindFirstChild("HumanoidRootPart")
+		local track, animation
+		if copyHumanoid and copyRoot then
+			track, animation = loadWalk(standIn, copyHumanoid, copyRoot)
+		end
+		local speed = math.clamp(current.humanoid.WalkSpeed, 8, 24)
+		playback = {
+			standIn = standIn, humanoid = current.humanoid, health = current.humanoid.Health,
+			points = current.points, position = current.points[1], index = 2, speed = speed,
+			ray = current.ray, body = current.body, height = current.height, track = track, animation = animation,
+		}
+		if track then
+			track:Play(.06, 1, speed / 16)
+		end
 	end
 
 	local function inputAvailable()
@@ -3130,8 +3186,9 @@ local function makePreconstruction()
 
 	return {
 		key = function(key)
-			if key == keys.Backspace then
+			if key == keys.Backspace or (key == keys.E and playback) then
 				clearPlan()
+				finishPlayback()
 			elseif key == keys.E and not plan and inputAvailable() then
 				local character = player.Character
 				local standIn, origin = remoteScan.predictionSource(character)
@@ -3162,17 +3219,21 @@ local function makePreconstruction()
 		cancelInput = function()
 			clearPlan()
 			hint.Text = "HOLD E   PRECONSTRUCT"
+			finishPlayback()
 		end,
 		update = function(camera, dt)
 			local standIn = remoteScan.predictionSource(player.Character)
-			if plan then
+			if playback then
+				updatePlayback(playback, standIn, dt)
+			elseif plan then
 				if standIn == plan.standIn and inputAvailable() then
+					title.Text = "PRECONSTRUCT"
 					updatePreview(plan, camera, dt)
 				else
 					clearPlan()
 				end
 			end
-			panel.Visible = plan ~= nil
+			panel.Visible = plan ~= nil or playback ~= nil
 			hint.Visible = standIn ~= nil and not panel.Visible
 			if panel.Visible then
 				size.Scale = math.clamp(camera.ViewportSize.X / 1050, .55, 1)
@@ -3181,10 +3242,13 @@ local function makePreconstruction()
 		end,
 		stop = function()
 			clearPlan()
+			finishPlayback()
+			panel.Visible = false
 			hint.Visible = false
 		end,
 		destroy = function()
 			clearPlan()
+			finishPlayback()
 			route:Destroy()
 		end,
 	}
