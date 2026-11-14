@@ -585,9 +585,11 @@ local function makeRemoteScan()
 		session = nil
 		releaseMouse(current)
 
+		local restored = false
 		if restoreCharacter and player.Character == current.character
 			and aliveRoot(current.character) == current.root and nearPlatform(current) then
-			if pcall(current.character.PivotTo, current.character, current.pivot) then
+			restored = pcall(current.character.PivotTo, current.character, current.pivot)
+			if restored then
 				current.root.AssemblyLinearVelocity = Vector3.zero
 				current.root.AssemblyAngularVelocity = Vector3.zero
 			end
@@ -607,6 +609,7 @@ local function makeRemoteScan()
 		end
 		current.standIn:Destroy()
 		platform.Parent = nil
+		return restored
 	end
 
 	local function start()
@@ -684,6 +687,12 @@ local function makeRemoteScan()
 	return {
 		start = start,
 		stop = stop,
+		predictionSource = function(character)
+			local current = session
+			if current and current.character == character and current.standIn.Parent and nearPlatform(current) then
+				return current.standIn, current.origin
+			end
+		end,
 		parkedOrigin = function(character)
 			local current = session
 			if current and current.character == character and nearPlatform(current) then
@@ -2671,6 +2680,406 @@ local function stopScan(restoreCharacter)
 	hideEnemies()
 end
 
+local function makePreconstruction()
+	local range, step = 30, .75
+	local yellow = Color3.fromRGB(255, 218, 74)
+	local white = Color3.fromRGB(238, 240, 241)
+	local red = Color3.fromRGB(227, 101, 89)
+	local panel = rect(gui, 0, 0, 392, 53, navy, 0, 16)
+	panel.AnchorPoint = Vector2.new(.5, 1)
+	panel.Position = UDim2.fromScale(.5, .895)
+	panel.Visible = false
+	local size = create("UIScale", panel, { Scale = 1 })
+	local lightFont = Font.new(FONT_FAMILY, Enum.FontWeight.Light)
+	local function caption(parent, message, x, y, width, height, textSize)
+		return create("TextLabel", parent, {
+			BackgroundTransparency = 1, Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(width, height),
+			Text = message, TextColor3 = white, TextSize = textSize, FontFace = lightFont,
+			TextStrokeColor3 = navy, TextStrokeTransparency = .58, ZIndex = 18,
+		})
+	end
+	local function keycap(key, x, width)
+		local badge = rect(panel, x, 34, width, 19, navy, .64, 17)
+		create("UIStroke", badge, { Color = white, Thickness = 1, Transparency = .2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border })
+		caption(badge, key, 0, 0, width, 19, 10)
+	end
+	local title = caption(panel, "PRECONSTRUCT", 36, 0, 320, 20, 14)
+	local prompt = caption(panel, "", 55, 32, 282, 21, 11)
+	keycap("E", 3, 27)
+	keycap("ENTER", 346, 43)
+	local hint = caption(gui, "E   PRECONSTRUCT", -90, -10, 180, 20, 11)
+	hint.Position = UDim2.new(.5, -90, .885, -10)
+	hint.Visible = false
+	local ticks = {}
+	for index = 1, 36 do
+		local width = if index % 5 == 0 then 6 elseif index % 3 == 0 then 2 else 4
+		ticks[index] = rect(panel, 36 + (index - 1) * 9, 24, width, 4, white, .22, 17)
+	end
+	local marker = rect(gui, 0, 0, 27, 27, navy, 0, 16)
+	marker.AnchorPoint = Vector2.new(.5, .5)
+	marker.Visible = false
+	for _, x in { 0, 26 } do
+		for _, y in { 0, 26 } do
+			rect(marker, if x == 0 then 0 else 20, y, 7, 1, yellow, .92, 17)
+			rect(marker, x, if y == 0 then 0 else 20, 1, 7, yellow, .92, 17)
+		end
+	end
+	local cross = rect(marker, 12, 12, 3, 3, yellow, 1, 17)
+	local outcome = rect(marker, -66, -20, 159, 15, Color3.fromRGB(10, 12, 14), .73, 17)
+	local outcomeText = caption(outcome, "", 0, 0, 159, 15, 10)
+	local action = rect(marker, -32, -20, 91, 15, Color3.fromRGB(10, 12, 14), .73, 17)
+	caption(action, "EXECUTE", 0, 0, 91, 15, 10)
+	local route = create("Folder", Workspace, { Name = "ConnorPreconstructionRoute" })
+	local segments = {}
+	local plan, playback
+	local drawnTicks, drawnColor
+	local keys = Enum.KeyCode
+	local function flat(vector)
+		return Vector3.new(vector.X, 0, vector.Z)
+	end
+
+	local function clearPlan()
+		if plan then
+			if plan.track then
+				plan.track:Destroy()
+			end
+			plan.ghost:Destroy()
+			plan = nil
+		end
+		marker.Visible = false
+		for _, segment in segments do
+			segment.Transparency = 1
+		end
+	end
+
+	local function drawProgress(progress, color)
+		local filled = math.ceil(#ticks * progress)
+		if filled == drawnTicks and color == drawnColor then
+			return
+		end
+		drawnTicks, drawnColor = filled, color
+		for index, tick in ticks do
+			tick.BackgroundTransparency = if index <= filled then .08 else .79
+			tick.BackgroundColor3 = color
+		end
+	end
+
+	local function walkCheck(state, from, to)
+		local delta = flat(to - from)
+		local ground = Workspace:Raycast(from + delta + Vector3.yAxis * 2, -Vector3.yAxis * 9, state.ray)
+		if not ground or ground.Normal.Y < .62 or ground.Position.Y <= Workspace.FallenPartsDestroyHeight + 6 then
+			return nil, "WOULD BE TOO UNSTABLE"
+		end
+		local landing = ground.Position + Vector3.yAxis * state.height
+		if landing.Y - from.Y > 1 or from.Y - landing.Y > 1.3 then
+			return nil, "ROUTE BLOCKED"
+		end
+		if delta.Magnitude > .01 then
+			local raised = from + Vector3.yAxis * (math.max(0, landing.Y - from.Y) + .35)
+			if Workspace:Blockcast(CFrame.new(raised), state.body, delta, state.ray) then
+				return nil, "ROUTE BLOCKED"
+			end
+		end
+		return landing
+	end
+
+	local function begin(root, humanoid, standIn, origin)
+		if not humanoid or not Workspace.CurrentCamera then
+			return
+		end
+		local ray = RaycastParams.new()
+		ray.FilterType = Enum.RaycastFilterType.Exclude
+		ray.FilterDescendantsInstances = { player.Character, standIn, route }
+		ray.IgnoreWater = true
+		ray.RespectCanCollide = true
+		ray.CollisionGroup = root.CollisionGroup
+		local ground = Workspace:Raycast(origin + Vector3.yAxis * .2, -Vector3.yAxis * 6, ray)
+		if not ground or ground.Normal.Y < .62 then
+			return
+		end
+		local wasArchivable = standIn.Archivable
+		standIn.Archivable = true
+		local ok, ghost = pcall(standIn.Clone, standIn)
+		standIn.Archivable = wasArchivable
+		if not ok or not ghost then
+			return
+		end
+		local ghostRoot = ghost:FindFirstChild("HumanoidRootPart")
+		if not ghostRoot or not ghostRoot:IsA("BasePart") then
+			ghost:Destroy()
+			return
+		end
+		ghost.Name = "ConnorPredictedMovement"
+		local ghostHumanoid = ghost:FindFirstChildOfClass("Humanoid")
+		local ghostParts = {}
+		for _, item in ghost:GetDescendants() do
+			if item:IsA("BasePart") and not item:FindFirstAncestorOfClass("Tool") then
+				item.LocalTransparencyModifier = 1
+				if item ~= ghostRoot and item.Transparency < 1 then
+					table.insert(ghostParts, item)
+					item.Color = Color3.fromRGB(86, 73, 37)
+					item.Transparency = math.max(item.Transparency, .59)
+					item.Material = Enum.Material.SmoothPlastic
+					if item:IsA("MeshPart") then
+						item.TextureID = ""
+					end
+				end
+			elseif item:IsA("Decal") or item:IsA("Texture") or item:IsA("SurfaceAppearance")
+				or item:IsA("ParticleEmitter") or item:IsA("Trail") or item:IsA("Beam") or item:IsA("Light")
+				or item:IsA("LayerCollector") or item:IsA("Highlight") or item:IsA("Tool") or item:IsA("Clothing") then
+				item:Destroy()
+			elseif item:IsA("SpecialMesh") then
+				item.TextureId = ""
+			end
+		end
+		local highlight = create("Highlight", ghost, {
+			Adornee = ghost, DepthMode = Enum.HighlightDepthMode.Occluded, Enabled = false,
+			OutlineColor = yellow, OutlineTransparency = .16, FillColor = yellow, FillTransparency = .87,
+		})
+		local walk = create("Animation", ghost, {
+			AnimationId = if humanoid.RigType == Enum.HumanoidRigType.R6 then "rbxassetid://180426354" else "rbxassetid://507777826",
+		})
+		local rootToPivot = ghostRoot.CFrame:ToObjectSpace(ghost:GetPivot())
+		-- The replica starts hidden inside the stationary stand-in, then takes its first step.
+		ghost.Parent = Workspace
+		local track
+		if ghostHumanoid then
+			local animator = ghostHumanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", ghostHumanoid)
+			local loaded, result = pcall(animator.LoadAnimation, animator, walk)
+			if loaded then
+				track = result
+				track.Looped = true
+				track.Priority = Enum.AnimationPriority.Movement
+				-- Animators need an unanchored body attached to an anchored root.
+				for _, part in ghost:GetDescendants() do
+					if part:IsA("BasePart") and part ~= ghostRoot and not part:IsA("Seat") and not part:IsA("VehicleSeat") then
+						part.Anchored = false
+					end
+				end
+			end
+		end
+		local height = origin.Y - ground.Position.Y
+		plan = {
+			character = player.Character, root = root, humanoid = humanoid, standIn = standIn,
+			position = origin, displayPosition = origin, facing = flat(ghostRoot.CFrame.LookVector), height = height, ray = ray,
+			body = Vector3.new(math.max(1.8, root.Size.X * .94), math.max(2.4, height * 1.45), math.max(1.5, root.Size.Z)),
+			ghost = ghost, ghostRoot = ghostRoot, rootToPivot = rootToPivot, highlight = highlight, ghostParts = ghostParts,
+			track = track, points = { origin },
+			distance = 0, elapsed = 0,
+		}
+	end
+
+	local function addStep(current, to, direction)
+		if current.distance == 0 then
+			for _, part in current.ghostParts do
+				part.LocalTransparencyModifier = 0
+			end
+			current.highlight.Enabled = true
+		end
+		local from = current.position
+		local segment = segments[#current.points]
+		if not segment then
+			segment = create("Part", route, {
+				Name = "RouteSegment", Anchored = true, CanCollide = false, CanTouch = false, CanQuery = false,
+				CastShadow = false, Color = yellow, Material = Enum.Material.Neon,
+			})
+			segments[#current.points] = segment
+		end
+		local center = (from + to) * .5 - Vector3.yAxis * (current.height - .10)
+		segment.Size = Vector3.new(.045, .035, (to - from).Magnitude + .015)
+		segment.CFrame = CFrame.lookAt(center, center + to - from)
+		segment.Transparency = .33
+		current.position = to
+		current.facing = direction
+		current.distance += step
+		table.insert(current.points, to)
+	end
+
+	local function updatePreview(current, camera, dt)
+		local direction = Vector3.zero
+		if not UserInputService:GetFocusedTextBox() then
+			local x = (UserInputService:IsKeyDown(keys.D) and 1 or 0) - (UserInputService:IsKeyDown(keys.A) and 1 or 0)
+			local z = (UserInputService:IsKeyDown(keys.W) and 1 or 0) - (UserInputService:IsKeyDown(keys.S) and 1 or 0)
+			local right = flat(camera.CFrame.RightVector)
+			right = if right.Magnitude > .01 then right.Unit else Vector3.xAxis
+			direction = flat(right * x + Vector3.yAxis:Cross(right) * z)
+		end
+		local moving = direction.Magnitude > .01 and current.distance < range
+		local speed = math.clamp(current.humanoid.WalkSpeed, 8, 20)
+		local advanced = false
+		if moving then
+			direction = direction.Unit
+			current.elapsed += math.min(dt, .10) * speed
+			while current.elapsed >= step and current.distance < range do
+				current.elapsed -= step
+				local landing, reason = walkCheck(current, current.position, current.position + direction * step)
+				current.blocked = reason
+				if not landing then
+					current.elapsed = 0
+					break
+				end
+				addStep(current, landing, direction)
+				advanced = true
+			end
+		else
+			current.elapsed = 0
+		end
+		if current.track then
+			if advanced and not current.track.IsPlaying then
+				current.track:Play(.09)
+			elseif (not moving or current.blocked) and current.track.IsPlaying then
+				current.track:Stop(.13)
+			end
+		end
+		if current.distance > 0 then
+			local display = current.displayPosition:Lerp(current.position, 1 - math.exp(-dt * 26))
+			current.displayPosition = display
+			local pose = CFrame.lookAt(display, display + current.facing)
+			if current.track then
+				current.ghostRoot.CFrame = pose
+			else
+				current.ghost:PivotTo(pose * current.rootToPivot)
+			end
+		end
+		local point, visible = camera:WorldToViewportPoint(current.displayPosition + Vector3.yAxis * .35)
+		marker.Visible = visible and (current.distance > 0 or current.blocked ~= nil)
+		marker.Position = UDim2.fromOffset(point.X, point.Y)
+		cross.BackgroundColor3 = if current.blocked then red else yellow
+		outcome.Visible = current.blocked ~= nil
+		outcomeText.Text = current.blocked or ""
+		outcomeText.TextColor3 = red
+		action.Visible = not moving and not current.blocked and current.distance >= 1.5
+		drawProgress(current.distance / range, if current.blocked then red else white)
+		prompt.Text = if current.distance < 1.5 then "WASD   PREVIEW ROUTE" else "CANCEL                         EXECUTE"
+	end
+
+	local function finishPlayback(resume)
+		local current = playback
+		playback = nil
+		if not current then
+			return
+		end
+		local root, humanoid = aliveRoot(current.character)
+		if player.Character == current.character and root == current.root and humanoid then
+			humanoid:Move(Vector3.zero, false)
+			if resume and scanEnabled then
+				remoteScan.start()
+			end
+		end
+	end
+
+	local function updatePlayback(current, root, dt)
+		local humanoid = current.humanoid
+		if root ~= current.root or player.Character ~= current.character or root.Anchored or humanoid.SeatPart then
+			finishPlayback(false)
+			return
+		end
+		local endpoint = current.points[current.index]
+		while endpoint do
+			local remaining = flat(endpoint - root.Position)
+			local leg = flat(endpoint - current.points[current.index - 1])
+			if remaining.Magnitude > .52 and (not current.points[current.index + 1]
+				or remaining:Dot(leg) > 0 or remaining.Magnitude > 1.25) then
+				break
+			end
+			current.index += 1
+			current.bestDistance = math.huge
+			endpoint = current.points[current.index]
+		end
+		if not endpoint then
+			finishPlayback(true)
+			return
+		end
+		local delta = flat(endpoint - root.Position)
+		local targetDistance = (endpoint - root.Position).Magnitude
+		if targetDistance > 3 then
+			finishPlayback(false)
+			return
+		end
+		current.timeout -= dt
+		if targetDistance < current.bestDistance - .08 then
+			current.bestDistance = targetDistance
+			current.stall = .55
+		else
+			current.stall -= dt
+		end
+		current.probeIn -= dt
+		if current.timeout <= 0 or current.stall <= 0 or humanoid.WalkSpeed <= 0 or humanoid.Health < current.health then
+			finishPlayback(true)
+			return
+		end
+		if current.probeIn <= 0 then
+			current.probeIn = .06
+			if not walkCheck(current, root.Position, endpoint) then
+				finishPlayback(true)
+				return
+			end
+		end
+		humanoid:Move(delta.Unit, false)
+		title.Text = "EXECUTE"
+		prompt.Text = "FOLLOWING ROUTE"
+		drawProgress((current.index - 1) / #current.points, white)
+	end
+
+	return {
+		key = function(key)
+			if key == keys.Backspace or (key == keys.E and (plan or playback)) then
+				clearPlan()
+				finishPlayback(true)
+			elseif key == keys.E then
+				local character = player.Character
+				local standIn, origin = remoteScan.predictionSource(character)
+				local root, humanoid = aliveRoot(character)
+				if standIn and root then
+					begin(root, humanoid, standIn, origin)
+				end
+			elseif key == keys.Return and plan and plan.distance >= 1.5 then
+				local current = plan
+				clearPlan()
+				if remoteScan.stop(true) then
+					current.index, current.probeIn = 2, 0
+					current.bestDistance, current.stall = math.huge, .55
+					current.timeout = math.min(6, current.distance / math.max(8, current.humanoid.WalkSpeed) + 1.2)
+					current.health = current.humanoid.Health
+					playback = current
+				end
+			end
+		end,
+		update = function(camera, root, dt)
+			local standIn = remoteScan.predictionSource(player.Character)
+			if playback then
+				updatePlayback(playback, root, dt)
+			elseif plan then
+				if standIn == plan.standIn then
+					title.Text = "PRECONSTRUCT"
+					updatePreview(plan, camera, dt)
+				else
+					clearPlan()
+				end
+			end
+			panel.Visible = plan ~= nil or playback ~= nil
+			hint.Visible = standIn ~= nil and not panel.Visible
+			if panel.Visible then
+				size.Scale = math.clamp(camera.ViewportSize.X / 1050, .55, 1)
+			end
+			return plan ~= nil
+		end,
+		stop = function()
+			clearPlan()
+			finishPlayback(false)
+			panel.Visible = false
+			hint.Visible = false
+		end,
+		destroy = function()
+			clearPlan()
+			finishPlayback(false)
+			route:Destroy()
+		end,
+	}
+end
+
+local preconstruction = if baseplateMode then makePreconstruction() else nil
+
 local function makeReconstruction(animationId)
 	local animation = if animationId then create("Animation", nil, { AnimationId = animationId }) else nil
 	local cameraStep = "ConnorVisionRespawnCamera"
@@ -2938,6 +3347,9 @@ local function render(dt)
 		end
 	end
 	if not camera or not root then
+		if preconstruction then
+			preconstruction.stop()
+		end
 		exitAge = nil
 		strength = 0
 		if scanEnabled and not scanStarting then
@@ -2960,6 +3372,7 @@ local function render(dt)
 		grade.Enabled = false
 		return
 	end
+	local previewing = preconstruction and scanEnabled and preconstruction.update(camera, root, dt)
 
 	local pixels = camera.ViewportSize
 	if lastPixels ~= pixels then
@@ -3005,7 +3418,7 @@ local function render(dt)
 		tone.saturation += (targetTone.saturation - tone.saturation) * adjust
 		tone.contrast += (targetTone.contrast - tone.contrast) * adjust
 		tone.wash += (targetTone.wash - tone.wash) * adjust
-		grade.Saturation = tone.saturation * strength
+		grade.Saturation = (if previewing then math.max(tone.saturation, -.48) else tone.saturation) * strength
 		grade.Brightness = tone.brightness * strength
 		grade.Contrast = tone.contrast * strength
 		grade.TintColor = neutralTint:Lerp(tone.tint, strength)
@@ -3054,6 +3467,9 @@ end
 
 local function toggleScan()
 	if scanEnabled then
+		if preconstruction then
+			preconstruction.stop()
+		end
 		local canReverse = scanAge >= .12 and gridDatum ~= nil
 		exitStrength = strength
 		stopScan()
@@ -3084,6 +3500,8 @@ local function onInputBegan(input, handled)
 		rightClickTravel = 0
 	elseif not battlegroundsMode and input.KeyCode == Enum.KeyCode.Q then
 		toggleScan()
+	elseif preconstruction and scanEnabled then
+		preconstruction.key(input.KeyCode)
 	elseif input.KeyCode == Enum.KeyCode.E and scanEnabled and not scanStarting and flagStatus then
 		local camera = Workspace.CurrentCamera
 		if camera and aliveRoot(player.Character) then
@@ -3095,6 +3513,9 @@ end
 local connections = {
 	UserInputService.InputBegan:Connect(onInputBegan),
 	player.CharacterRemoving:Connect(function()
+		if preconstruction then
+			preconstruction.stop()
+		end
 		if remoteScan and scanEnabled then
 			remoteScan.stop(false)
 			resetScanOrigin()
@@ -3160,6 +3581,9 @@ local function cleanup()
 	end
 
 	RunService:UnbindFromRenderStep(RENDER_STEP)
+	if preconstruction then
+		preconstruction.destroy()
+	end
 	if stopReconstruction then
 		stopReconstruction()
 	end
